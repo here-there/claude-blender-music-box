@@ -82,6 +82,21 @@ describe('Mechanism', () => {
       expect(m.state.omega / 0.25).toBeCloseTo(k, 6);
     }
   });
+  it('small winds accumulate with lid open and restart rotation', () => {
+    const m = new Mechanism(song, pins);
+    m.setLid(true);
+    let time = 0;
+    for (let i = 0; i < 20; i++) {
+      m.wind(0.05);
+      time += 0.01;
+      m.update(time);
+    }
+    const wound = (20 * 0.05 / (Math.PI * 2)) * 0.1;
+    expect(m.state.tension).toBeGreaterThan(wound * 0.9);
+    expect(m.state.tension).toBeLessThanOrEqual(wound);
+    expect(m.state.omega).toBeGreaterThan(0);
+    expect(m.state.phase).toBeGreaterThan(0);
+  });
   it('clamps huge dt', () => {
     const m = make(); m.setLid(true);
     m.update(0.5);

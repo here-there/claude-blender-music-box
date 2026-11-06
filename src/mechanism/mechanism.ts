@@ -5,8 +5,9 @@ export const TENSION_PER_REV = 0.3;
 export const SLOWDOWN_TENSION = 0.15;
 export const LID_SECONDS = 0.6;
 export const MAX_STEP = 0.1;
-// smoothstep tail decays ~1/t; snap to 0 once omega is imperceptible (~0.0008 rev/s)
-const TENSION_EPS = 0.005;
+const TENSION_EPS = 1e-4;
+/** smoothstep tail never reaches 0; below this fraction of omega0 the cylinder counts as stopped (tension untouched) */
+export const STOP_OMEGA_FRACTION = 1e-3;
 
 export interface PluckEvent { tooth: number; pinIndex: number; time: number; velocity: number }
 export interface MechanismState {
@@ -79,6 +80,7 @@ export class Mechanism {
       if (s.lidOpen && s.tension > 0) {
         const u = Math.min(1, s.tension / SLOWDOWN_TENSION);
         s.omega = this.omega0 * u * u * (3 - 2 * u);
+        if (s.omega < this.omega0 * STOP_OMEGA_FRACTION) s.omega = 0;
         let dPhase = s.omega * dt;
         const cost = dPhase * TENSION_PER_REV;
         if (cost >= s.tension) dPhase = s.tension / TENSION_PER_REV;
