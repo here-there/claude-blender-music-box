@@ -8,7 +8,9 @@ import { Mechanism, phaseAt, type PluckEvent } from "./mechanism/mechanism";
 import { DEFAULT_ORBIT } from "./render/camera";
 import { createRenderer, easeLid, type RenderState } from "./render/renderer";
 import { PUSH_SECONDS } from "./render/vibration";
+import { createMusicBoxAudio } from "./audio/engine";
 import { arrange } from "./songs/arrange";
+import { COMB_PITCHES } from "./songs/comb";
 import { SONGS } from "./songs/library";
 
 /** Mechanism runs this far ahead of the frame clock so audio (Task 9) can schedule plucks precisely. */
@@ -60,11 +62,16 @@ async function main(): Promise<void> {
     // so a still-ringing tooth is not cut short before the next pin reaches it.
     const pending: PluckEvent[] = [];
     const scale = timeScale();
+    const audio = createMusicBoxAudio();
+    // Temporary until Task 11 (lid/key gestures): first click anywhere unlocks audio.
+    addEventListener("pointerdown", () => void audio.resume(), { once: true });
     const t0 = performance.now();
     const tick = (nowMs: number): void => {
       const now = ((nowMs - t0) / 1000) * scale;
       const events = mechanism.update(now + LOOKAHEAD);
-      pending.push(...events); // Task 9: hand the same events to the audio engine
+      pending.push(...events);
+      // Audio stays in wall time (mechanism clock = wall * scale).
+      for (const ev of events) audio.play(COMB_PITCHES[ev.tooth]!, ev.velocity, ev.time / scale, now / scale);
       for (let i = pending.length - 1; i >= 0; i--) {
         const ev = pending[i]!;
         if (now < ev.time - PUSH_SECONDS) continue;
