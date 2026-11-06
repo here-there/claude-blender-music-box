@@ -14,6 +14,7 @@ import idShader from "./shaders/id.wgsl";
 import pbrShader from "./shaders/pbr.wgsl";
 import pinsShader from "./shaders/pins.wgsl";
 import postShader from "./shaders/post.wgsl";
+import { pickMatrix } from "./pick";
 
 export interface RenderState {
   time: number;
@@ -248,7 +249,7 @@ export async function createRenderer(
   const lighting = { scene: sceneBlock, irradianceMap, specularMap, envSampler, shadowMap, shadowSampler };
   const casterState = { cull: "none", depth: { biasSlopeScale: SHADOW.biasSlopeScale }, writeMask: [] } as const;
   const shadowEntry = { vertex: "vs_shadow", fragment: "fs_shadow" };
-  // ---- Picking: 1×1 ID target; the pass viewport shifts the requested pixel onto it ----
+  // ---- Picking: 1×1 ID target; a pick matrix (render/pick.ts) magnifies the requested pixel onto it ----
   const idEntry = {
     part: { vertex: "vs_part", fragment: "fs_id" },
     tooth: { vertex: "vs_tooth", fragment: "fs_id" },
@@ -433,14 +434,18 @@ export async function createRenderer(
   const encodeSrgb = output.format.endsWith("-srgb") ? 0 : 1;
 
   let pickChain: Promise<number> = Promise.resolve(0);
+  const pickViewProjection = new Float32Array(16);
   const pickNow = async (px: number, py: number): Promise<number> => {
     const [w, h] = output.size;
     if (disposed || !rendered || !(px >= 0 && py >= 0 && px < w && py < h)) return 0;
     const x = Math.floor(px), y = Math.floor(py);
+    // Same animation uniforms as the last render(); the camera is swapped for a pick matrix that
+    // magnifies pixel (x, y) onto the 1x1 target. (A negative viewport origin did the same but is
+    // rejected by older WebKit, e.g. iOS 26.6, which made every pick on iPhone return 0.)
+    sceneBlock.set({ viewProjection: pickMatrix(x, y, w, h, cam.viewProjection, pickViewProjection) });
     const f = frame(gpu);
     try {
-      // Same camera / animation uniforms as the last render(): only the viewport differs.
-      f.pass({ target: idTarget, clear: [0, 0, 0, 0], clearDepth: 1, viewport: { x: -x, y: -y, width: w, height: h } }, (pass) => {
+      f.pass({ target: idTarget, clear: [0, 0, 0, 0], clearDepth: 1 }, (pass) => {
         for (const o of objects) for (const d of o.ids) pass.draw(d);
         pass.draw(teethId);
         if (pinsId) pass.draw(pinsId);
@@ -449,6 +454,9 @@ export async function createRenderer(
     } catch (err) {
       f.cancel();
       throw err;
+    } finally {
+      // Queue-ordered: the next render() frame sees the real camera again.
+      sceneBlock.set({ viewProjection: cam.viewProjection });
     }
     const px4 = await idTarget.color.read({ mipLevel: 0, region: "all" });
     return (px4[0] ?? 0) | ((px4[1] ?? 0) << 8);

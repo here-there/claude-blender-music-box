@@ -1,5 +1,6 @@
 import { init, surface } from "vgpu";
 import { hasWebGpu, showFatal } from "./app/errors";
+import { createDebugOverlay } from "./app/debugOverlay";
 import { pinInstances } from "./geometry/pins";
 import { parseGlb } from "./gltf/glb";
 import { uploadModel } from "./gltf/upload";
@@ -53,6 +54,22 @@ async function main(): Promise<void> {
     const [glb, meta] = await Promise.all([loadGlb(`${BASE}musicbox.glb`), loadMeta(`${BASE}musicbox.meta.json`)]);
     const parts = await uploadModel(gpu, parseGlb(glb));
     const renderer = await createRenderer(gpu, stage, parts, meta);
+    const debug = createDebugOverlay();
+    if (debug) {
+      debug.log(`canvas css ${canvas.clientWidth}x${canvas.clientHeight} target ${stage.size.join("x")} dpr ${devicePixelRatio}`);
+      gpu.device.gpu.addEventListener("uncapturederror", (e) => debug.log(`GPU error: ${(e as GPUUncapturedErrorEvent).error.message}`));
+      for (const type of ["pointerdown", "pointerup", "pointercancel", "click"] as const) {
+        canvas.addEventListener(type, (e) => {
+          const p = e as PointerEvent;
+          debug.log(`${type} ${p.pointerType ?? ""} btn=${p.button} detail=${p.detail} @${Math.round(p.clientX)},${Math.round(p.clientY)}`);
+        });
+      }
+      const pick = renderer.pick.bind(renderer);
+      renderer.pick = (px, py) => pick(px, py).then(
+        (id) => { debug.log(`pick(${px},${py}) -> ${id}`); return id; },
+        (err) => { debug.log(`pick(${px},${py}) threw: ${err instanceof Error ? err.message : String(err)}`); throw err; },
+      );
+    }
 
     const song = SONGS[0]!;
     const arranged = arrange(song);
