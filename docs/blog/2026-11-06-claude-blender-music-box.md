@@ -3,6 +3,12 @@
 > 在线演示：[study.geobridge.cn/webgpu/music-box](https://study.geobridge.cn/webgpu/music-box/)——打开盒盖就会开始播放，转到盒底可以拖动钥匙上弦。
 > 源码：[github.com/here-there/claude-blender-music-box](https://github.com/here-there/claude-blender-music-box)（错误版本见标签 [`v0.1-gear-misaligned`](https://github.com/here-there/claude-blender-music-box/tree/v0.1-gear-misaligned)）
 
+```embed
+https://study.geobridge.cn/webgpu/music-box/
+title: 八音盒在线演示
+height: 600
+```
+
 ![成品：打开盒盖的八音盒](assets/final/hero.jpg)
 
 这篇文章记录了我和 Claude（Claude Code）一起，用 Blender 建模、用 WebGPU 在浏览器里渲染，做出一个**写实、能演奏、原理可看**的八音盒的全过程。它不是一张贴图动画：发条真的储能，调速器真的把转速稳住，滚筒上的每一颗凸点都按曲谱排布，转到钢片下方时把它挑起、让它振动，同一时刻合成器发出对应的音。

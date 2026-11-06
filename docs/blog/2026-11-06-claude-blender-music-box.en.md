@@ -3,6 +3,12 @@
 > Live demo: [study.geobridge.cn/webgpu/music-box](https://study.geobridge.cn/webgpu/music-box/). Open the lid and it starts playing; orbit under the box and drag the key to wind it.
 > Source: [github.com/here-there/claude-blender-music-box](https://github.com/here-there/claude-blender-music-box) (the buggy version is kept at tag [`v0.1-gear-misaligned`](https://github.com/here-there/claude-blender-music-box/tree/v0.1-gear-misaligned))
 
+```embed
+https://study.geobridge.cn/webgpu/music-box/
+title: Music box live demo
+height: 600
+```
+
 ![The finished music box with its lid open](assets/final/hero.jpg)
 
 This post walks through how I built, together with Claude (Claude Code), a **photoreal music box that actually plays and shows how it works**: modelled in Blender, rendered in the browser with WebGPU. It is not a canned animation. The spring really stores energy, the governor really holds the speed steady, and every pin on the cylinder is placed from the score. When a pin passes under a steel tooth it lifts it and sets it vibrating, and at that same instant a synthesizer plays the matching note.
