@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { Mechanism, phaseAt, type PluckEvent } from '../../src/mechanism/mechanism';
 import type { Song, ArrangedPin } from '../../src/songs/types';
+import { SONGS } from '../../src/songs/library';
+import { arrange } from '../../src/songs/arrange';
+import { SLOWDOWN_TENSION } from '../../src/mechanism/mechanism';
 
 const song: Song = {
   id: 't', title: 't', bpm: 60, beatsPerRevolution: 4,
@@ -65,6 +68,19 @@ describe('Mechanism', () => {
     expect(lateEvents).toBe(0);
     expect(last).toBeLessThan(50);
   });
+  it('every real song stops within 12 s of tension crossing SLOWDOWN_TENSION (R12)', () => {
+    for (const song of SONGS) {
+      const m = new Mechanism(song, arrange(song));
+      m.wind((SLOWDOWN_TENSION / 0.1) * Math.PI * 2); m.setLid(true);
+      let stopped = -1;
+      for (let t = 0.05; t <= 40; t += 0.05) {
+        m.update(t);
+        if (m.state.omega === 0) { stopped = t; break; }
+      }
+      expect(stopped, song.id).toBeGreaterThan(0);
+      expect(stopped, song.id).toBeLessThanOrEqual(12);
+    }
+  });
   it('downbeat fires after setSong + open lid, not burned by idle updates', () => {
     const m = make(); m.setLid(true);
     run(m, 0, 1, 0.1);
@@ -75,7 +91,7 @@ describe('Mechanism', () => {
     expect(ev.map((e) => e.pinIndex)).toEqual([0]);
   });
   it('governor follows smoothstep below SLOWDOWN_TENSION', () => {
-    for (const [ten, k] of [[0.075, 0.5], [0.0375, 0.15625]] as const) {
+    for (const [ten, k] of [[0.075, 0.5], [0.1125, 0.84375]] as const) {
       const m = new Mechanism(song, pins);
       m.wind((ten / 0.1) * Math.PI * 2); m.setLid(true);
       m.update(0.001);
@@ -87,11 +103,11 @@ describe('Mechanism', () => {
     m.setLid(true);
     let time = 0;
     for (let i = 0; i < 20; i++) {
-      m.wind(0.05);
+      m.wind(0.2);
       time += 0.01;
       m.update(time);
     }
-    const wound = (20 * 0.05 / (Math.PI * 2)) * 0.1;
+    const wound = (20 * 0.2 / (Math.PI * 2)) * 0.1;
     expect(m.state.tension).toBeGreaterThan(wound * 0.9);
     expect(m.state.tension).toBeLessThanOrEqual(wound);
     expect(m.state.omega).toBeGreaterThan(0);

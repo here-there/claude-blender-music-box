@@ -41,6 +41,11 @@ async function main(): Promise<void> {
   }
   try {
     const gpu = await init();
+    let deviceLost = false;
+    void gpu.lost.then((info) => {
+      deviceLost = true;
+      showFatal("device-lost", info.message || undefined);
+    });
     const canvas = document.querySelector<HTMLCanvasElement>("#stage")!;
     const stage = surface(gpu, canvas, { dpr: [1, 2] });
     const [glb, meta] = await Promise.all([loadGlb(`${BASE}musicbox.glb`), loadMeta(`${BASE}musicbox.meta.json`)]);
@@ -116,7 +121,7 @@ async function main(): Promise<void> {
       try {
         renderer.render(state);
       } catch (err) {
-        showFatal("load", err instanceof Error ? err.message : String(err));
+        if (!deviceLost) showFatal("load", err instanceof Error ? err.message : String(err));
         return;
       }
       requestAnimationFrame(tick);

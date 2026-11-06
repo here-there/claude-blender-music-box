@@ -26,6 +26,7 @@ const ORBIT_PER_PIXEL = 0.005;
 const ZOOM_BASE = 1.1;
 const CLICK_SLOP = 4;
 const HOVER_MS = 50;
+const DBLCLICK_LID_MS = 400;
 const RATCHET_STEP = Math.PI / 6;
 /** Near the key's centre the pointer angle is meaningless: no winding inside this radius (CSS px). */
 const WIND_DEADZONE = 12;
@@ -39,6 +40,8 @@ interface Drag {
   lastX: number; lastY: number; // last position applied to the orbit
   curX: number; curY: number;
   moved: number;
+  /** click count of the pointerdown (2 = second click of a double-click) */
+  detail: number;
   mode: Mode;
   released: boolean;
   // winding
@@ -100,7 +103,10 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
     }
   };
 
-  const toggleLid = (): void => {
+  let lastToggle = -Infinity;
+  const toggleLid = (d: Drag): void => {
+    if (d.detail >= 2) return; // second click of a double-click: the dblclick resets the camera, the lid stays put
+    lastToggle = performance.now();
     mechanism.setLid(!mechanism.state.lidOpen);
     ui.hideHint();
   };
@@ -132,7 +138,7 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
     ui.hideLabel();
     const d: Drag = {
       pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY,
-      curX: e.clientX, curY: e.clientY, moved: 0, mode: "pending", released: false,
+      curX: e.clientX, curY: e.clientY, moved: 0, detail: e.detail, mode: "pending", released: false,
       cx: 0, cy: 0, sign: 1, prevAngle: 0, ratchet: 0, armed: false,
     };
     drag = d;
@@ -144,7 +150,7 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
       }
       d.mode = id === LID_ID ? "lid" : "orbit";
       if (d.released) {
-        if (d.mode === "lid" && d.moved < CLICK_SLOP) toggleLid();
+        if (d.mode === "lid" && d.moved < CLICK_SLOP) toggleLid(d);
         return;
       }
       applyOrbitDrag(d); // catch up with motion made while the pick was in flight
@@ -172,7 +178,7 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
     d.released = true;
     drag = null;
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-    if (e.type === "pointerup" && d.mode === "lid" && d.moved < CLICK_SLOP) toggleLid();
+    if (e.type === "pointerup" && d.mode === "lid" && d.moved < CLICK_SLOP) toggleLid(d);
     canvas.style.cursor = "";
   };
 
@@ -212,6 +218,7 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
   };
 
   const onDblClick = (): void => {
+    if (performance.now() - lastToggle < DBLCLICK_LID_MS) return; // double-click on the lid is a lid click, not a reset
     deps.setOrbit(clampOrbit({ ...DEFAULT_ORBIT, target: [...DEFAULT_ORBIT.target] }));
   };
 

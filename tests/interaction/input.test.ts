@@ -34,8 +34,8 @@ function setup(hit: number, key: { pivot: Vec3; axis: Vec3 } = { pivot: [0.02, 0
   attachInput(canvas, deps);
   const fire = (type: string, x: number, y: number) =>
     canvas.dispatchEvent(new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true }) as unknown as Event);
-  const ptr = (type: string, x: number, y: number) => {
-    const e = new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true });
+  const ptr = (type: string, x: number, y: number, detail = 0) => {
+    const e = new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, detail });
     Object.defineProperty(e, "pointerId", { value: 1 });
     Object.defineProperty(e, "pointerType", { value: "mouse" });
     canvas.dispatchEvent(e);
@@ -121,6 +121,29 @@ describe("attachInput", () => {
     t.ptr("pointerup", 400, 300);
     await flush();
     expect(t.deps.mechanism.setLid).toHaveBeenCalledWith(true);
+  });
+
+  it("a double-click on the lid toggles once and does not reset the camera", async () => {
+    const t = setup(partId("lid"));
+    t.ptr("pointerdown", 400, 300, 1);
+    await flush();
+    t.ptr("pointerup", 400, 300, 1);
+    t.ptr("pointerdown", 400, 300, 2);
+    await flush();
+    t.ptr("pointerup", 400, 300, 2);
+    expect(t.deps.mechanism.setLid).toHaveBeenCalledTimes(1);
+    t.deps.setOrbit({ ...t.orbit(), yaw: 1 });
+    t.fire("dblclick", 400, 300);
+    expect(t.orbit().yaw).toBe(1);
+  });
+
+  it("double-click away from the lid still resets the camera", async () => {
+    const t = setup(0);
+    t.ptr("pointerdown", 400, 300, 1); await flush(); t.ptr("pointerup", 400, 300, 1);
+    t.ptr("pointerdown", 400, 300, 2); await flush(); t.ptr("pointerup", 400, 300, 2);
+    t.deps.setOrbit({ ...t.orbit(), yaw: 1 });
+    t.fire("dblclick", 400, 300);
+    expect(t.orbit()).toEqual(clampOrbit(DEFAULT_ORBIT));
   });
 
   it("drags elsewhere orbit 0.005 rad per pixel, clamped", async () => {

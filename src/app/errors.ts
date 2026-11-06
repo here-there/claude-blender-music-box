@@ -11,7 +11,7 @@ const TITLES: Record<FatalKind, string> = {
 };
 
 const HINTS: Record<FatalKind, string> = {
-  "no-webgpu": "八音盒需要 WebGPU。请使用最新版 Chrome、Edge 或 Safari 打开。",
+  "no-webgpu": "八音盒需要 WebGPU。请使用桌面版 Chrome 或 Edge（113 及以上版本）打开。",
   load: "初始化图形设备或资源时出错。",
   "device-lost": "图形设备已断开，请重新加载页面。",
 };

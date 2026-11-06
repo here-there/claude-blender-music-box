@@ -1,5 +1,5 @@
 // Glass panel under the lid: drawn last, blended (premultiplied), depth-tested without depth writes.
-// Pure reflection layer: colour = prefiltered environment · F, alpha = 0.08 + 0.6·F with F = Schlick(0.04),
+// Pure reflection layer: colour = prefiltered environment · F, alpha = 0.06 + 0.35·F with F = Schlick(0.04),
 // so it darkens what is behind it only slightly and shows bright Fresnel edges at grazing angles.
 import { Scene, fresnelSchlick, distributionGGX, visibilitySmithGGX } from "./common.wgsl";
 import { Model, modelVertex } from "./shadow.wgsl";
@@ -49,6 +49,6 @@ struct VsOut {
     * fresnelSchlick(max(dot(v, h), 0.0), vec3f(0.04)) * scene.lightColor * scene.lightIntensity * NdotL;
 
   let color = env * F + min(glint, vec3f(24.0));
-  let alpha = 0.08 + 0.6 * F;
+  let alpha = 0.06 + 0.35 * F;
   return vec4f(color, alpha);   // premultiplied: dst · (1 − alpha) + color
 }

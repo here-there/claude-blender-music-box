@@ -6,8 +6,11 @@ export const SLOWDOWN_TENSION = 0.15;
 export const LID_SECONDS = 0.6;
 export const MAX_STEP = 0.1;
 const TENSION_EPS = 1e-4;
-/** smoothstep tail never reaches 0; below this fraction of omega0 the cylinder counts as stopped (tension untouched) */
-export const STOP_OMEGA_FRACTION = 1e-3;
+/**
+ * smoothstep tail never reaches 0; below this fraction of omega0 the cylinder counts as stopped (tension untouched).
+ * 0.3 (Ruling R12): the audible slowdown lasts ~8-11 s for the shipped songs (1e-3 took 40-150 s).
+ */
+export const STOP_OMEGA_FRACTION = 0.3;
 
 export interface PluckEvent { tooth: number; pinIndex: number; time: number; velocity: number }
 export interface MechanismState {
