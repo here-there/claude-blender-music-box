@@ -34,7 +34,7 @@ describe('Mechanism', () => {
   });
   it('pluck timing', () => {
     const m = make(); m.setLid(true);
-    expect(m.update(0.5)).toEqual([]);
+    expect(m.update(0.5).map((e) => e.pinIndex)).toEqual([0]); // downbeat
     const ev = m.update(1.1);
     expect(ev).toHaveLength(1);
     expect(ev[0]!.pinIndex).toBe(1);
@@ -45,9 +45,9 @@ describe('Mechanism', () => {
   it('wraps revolutions', () => {
     const m = make(); m.setLid(true);
     const ev = run(m, 0, 4.5, 0.1).filter((e) => e.pinIndex === 0);
-    // phase 0 is not in (p0, p1], so the first beat-0 event is the wrap at phase 1.0
-    expect(ev).toHaveLength(1);
-    expect(ev[0]!.time).toBeCloseTo(4.0, 6);
+    expect(ev).toHaveLength(2);
+    expect(ev[0]!.time).toBeCloseTo(0, 6);
+    expect(ev[1]!.time).toBeCloseTo(4.0, 6);
   });
   it('slows then stops', () => {
     const m = new Mechanism(song, pins);
@@ -64,6 +64,23 @@ describe('Mechanism', () => {
     expect(m.state.omega).toBe(0);
     expect(lateEvents).toBe(0);
     expect(last).toBeLessThan(50);
+  });
+  it('downbeat fires after setSong + open lid, not burned by idle updates', () => {
+    const m = make(); m.setLid(true);
+    run(m, 0, 1, 0.1);
+    m.setSong(song, pins);
+    m.update(1.1); // lid closed: must not burn the fresh flag
+    m.wind(FULL); m.setLid(true);
+    const ev = m.update(1.2);
+    expect(ev.map((e) => e.pinIndex)).toEqual([0]);
+  });
+  it('governor follows smoothstep below SLOWDOWN_TENSION', () => {
+    for (const [ten, k] of [[0.075, 0.5], [0.0375, 0.15625]] as const) {
+      const m = new Mechanism(song, pins);
+      m.wind((ten / 0.1) * Math.PI * 2); m.setLid(true);
+      m.update(0.001);
+      expect(m.state.omega / 0.25).toBeCloseTo(k, 6);
+    }
   });
   it('clamps huge dt', () => {
     const m = make(); m.setLid(true);
