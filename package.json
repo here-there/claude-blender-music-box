@@ -7,7 +7,9 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "model": "/Applications/Blender.app/Contents/MacOS/Blender -b -P blender/build_musicbox.py -- --out public/musicbox.glb",
-    "check": "for f in src/render/shaders/*.wgsl; do vgpu check \"$f\" > /dev/null || exit 1; done"
+    "check": "for f in src/render/shaders/*.wgsl; do vgpu check \"$f\" > /dev/null || exit 1; done",
+    "build:site": "tsc --noEmit && vite build --base=/webgpu/music-box/",
+    "deploy": "pnpm build:site && ${STUDY_SITE:-../study-site}/scripts/deploy-app.sh webgpu music-box dist"
   },
   "devEngines": {
     "packageManager": {
