@@ -2,7 +2,8 @@ import type { Song, ArrangedPin } from '../songs/types';
 
 export const WIND_PER_KEY_TURN = 0.1;
 export const TENSION_PER_REV = 0.3;
-export const SLOWDOWN_TENSION = 0.075;
+/** Seconds the √T wind-down lasts from the slowdown threshold to a full stop, for every song. */
+export const SLOWDOWN_SECONDS = 10;
 export const LID_SECONDS = 0.6;
 export const MAX_STEP = 0.1;
 const TENSION_EPS = 1e-4;
@@ -26,6 +27,7 @@ export class Mechanism {
   private pins: readonly ArrangedPin[];
   private pinPhases: number[] = [];
   private omega0 = 0;
+  private slowdown = 0;
   /** true until the first real advance after construction/setSong: pluck window is [p0,p1] */
   private fresh = true;
 
@@ -37,9 +39,17 @@ export class Mechanism {
 
   get state(): Readonly<MechanismState> { return this.s; }
 
+  /**
+   * Tension below which the governor lets the cylinder slow down. With ω = ω₀·√(T/Tₛ) and
+   * dT/dt = −ω·TENSION_PER_REV, the wind-down lasts 2·Tₛ/(TENSION_PER_REV·ω₀); Tₛ is chosen per
+   * song so that equals SLOWDOWN_SECONDS (long, slow songs would otherwise drag on).
+   */
+  get slowdownTension(): number { return this.slowdown; }
+
   private configure(): void {
     const bpr = this.song.beatsPerRevolution;
     this.omega0 = this.song.bpm / (60 * bpr);
+    this.slowdown = Math.min(1, (SLOWDOWN_SECONDS * TENSION_PER_REV * this.omega0) / 2);
     this.pinPhases = this.pins.map((p) => ((p.beat / bpr) % 1 + 1) % 1);
   }
 
@@ -76,7 +86,7 @@ export class Mechanism {
       s.lidT = Math.min(1, Math.max(0, s.lidT + (s.lidOpen ? dt : -dt) / LID_SECONDS));
       if (s.lidOpen && s.tension > 0) {
         // Ruling R13: sqrt governor decelerates at a constant rate and spends all tension (TENSION_EPS snap ends it).
-        s.omega = this.omega0 * Math.sqrt(Math.min(1, s.tension / SLOWDOWN_TENSION));
+        s.omega = this.omega0 * Math.sqrt(Math.min(1, s.tension / this.slowdown));
         let dPhase = s.omega * dt;
         const cost = dPhase * TENSION_PER_REV;
         if (cost >= s.tension) dPhase = s.tension / TENSION_PER_REV;

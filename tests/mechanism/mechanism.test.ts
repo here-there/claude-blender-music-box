@@ -3,7 +3,7 @@ import { Mechanism, phaseAt, type PluckEvent } from '../../src/mechanism/mechani
 import type { Song, ArrangedPin } from '../../src/songs/types';
 import { SONGS } from '../../src/songs/library';
 import { arrange } from '../../src/songs/arrange';
-import { SLOWDOWN_TENSION } from '../../src/mechanism/mechanism';
+import { SLOWDOWN_SECONDS } from '../../src/mechanism/mechanism';
 
 const song: Song = {
   id: 't', title: 't', bpm: 60, beatsPerRevolution: 4,
@@ -68,17 +68,17 @@ describe('Mechanism', () => {
     expect(lateEvents).toBe(0);
     expect(last).toBeLessThan(50);
   });
-  it('every real song stops within 12 s of tension crossing SLOWDOWN_TENSION (R13)', () => {
+  it('every real song stops ~SLOWDOWN_SECONDS after tension crossing its slowdown threshold', () => {
     for (const song of SONGS) {
       const m = new Mechanism(song, arrange(song));
-      m.wind((SLOWDOWN_TENSION / 0.1) * Math.PI * 2); m.setLid(true);
+      m.wind((m.slowdownTension / 0.1) * Math.PI * 2); m.setLid(true);
       let stopped = -1;
       for (let t = 0.05; t <= 40; t += 0.05) {
         m.update(t);
         if (m.state.omega === 0) { stopped = t; break; }
       }
-      expect(stopped, song.id).toBeGreaterThan(0);
-      expect(stopped, song.id).toBeLessThanOrEqual(12);
+      expect(stopped, song.id).toBeGreaterThan(SLOWDOWN_SECONDS - 2);
+      expect(stopped, song.id).toBeLessThanOrEqual(SLOWDOWN_SECONDS + 2);
     }
   });
   it('downbeat fires after setSong + open lid, not burned by idle updates', () => {
@@ -90,10 +90,10 @@ describe('Mechanism', () => {
     const ev = m.update(1.2);
     expect(ev.map((e) => e.pinIndex)).toEqual([0]);
   });
-  it('governor follows sqrt(tension / SLOWDOWN_TENSION) below the threshold (R13)', () => {
+  it('governor follows sqrt(tension / slowdownTension) below the threshold (R13)', () => {
     for (const [frac, k] of [[0.5, Math.SQRT1_2], [0.25, 0.5]] as const) {
       const m = new Mechanism(song, pins);
-      m.wind(((frac * SLOWDOWN_TENSION) / 0.1) * Math.PI * 2); m.setLid(true);
+      m.wind(((frac * m.slowdownTension) / 0.1) * Math.PI * 2); m.setLid(true);
       m.update(0.001);
       expect(m.state.omega / 0.25).toBeCloseTo(k, 3);
     }
