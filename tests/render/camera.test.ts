@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_ORBIT, clampOrbit, cameraMatrices } from "../../src/render/camera";
+import { DEFAULT_ORBIT, clampOrbit, cameraMatrices, resetOrbit } from "../../src/render/camera";
 
 describe("camera", () => {
   it("clamps pitch and distance to the upper limits", () => {
@@ -53,5 +53,14 @@ describe("dampOrbit", () => {
     expect(cur.target[2]).toBeCloseTo(3 * k, 9);
     for (let i = 0; i < 200; i++) dampOrbit(cur, goal, 1 / 60, 0.12);
     expect(cur.pitch).toBeCloseTo(0.5, 6);
+  });
+  it("resetOrbit takes the shortest way to the default yaw", () => {
+    const turns = 6 * Math.PI;
+    const r = resetOrbit({ ...DEFAULT_ORBIT, yaw: DEFAULT_ORBIT.yaw + turns + 0.3, target: [0, 0, 0] });
+    expect(r.yaw).toBeCloseTo(DEFAULT_ORBIT.yaw + turns, 9);
+    expect(Math.abs(r.yaw - (DEFAULT_ORBIT.yaw + turns + 0.3))).toBeLessThan(0.31);
+    expect(r.pitch).toBe(DEFAULT_ORBIT.pitch);
+    expect(r.distance).toBe(DEFAULT_ORBIT.distance);
+    expect(r.target).toEqual([...DEFAULT_ORBIT.target]);
   });
 });

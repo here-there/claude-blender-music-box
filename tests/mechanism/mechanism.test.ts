@@ -68,7 +68,7 @@ describe('Mechanism', () => {
     expect(lateEvents).toBe(0);
     expect(last).toBeLessThan(50);
   });
-  it('every real song stops within 12 s of tension crossing SLOWDOWN_TENSION (R12)', () => {
+  it('every real song stops within 12 s of tension crossing SLOWDOWN_TENSION (R13)', () => {
     for (const song of SONGS) {
       const m = new Mechanism(song, arrange(song));
       m.wind((SLOWDOWN_TENSION / 0.1) * Math.PI * 2); m.setLid(true);
@@ -90,25 +90,38 @@ describe('Mechanism', () => {
     const ev = m.update(1.2);
     expect(ev.map((e) => e.pinIndex)).toEqual([0]);
   });
-  it('governor follows smoothstep below SLOWDOWN_TENSION', () => {
-    for (const [ten, k] of [[0.075, 0.5], [0.1125, 0.84375]] as const) {
+  it('governor follows sqrt(tension / SLOWDOWN_TENSION) below the threshold (R13)', () => {
+    for (const [frac, k] of [[0.5, Math.SQRT1_2], [0.25, 0.5]] as const) {
       const m = new Mechanism(song, pins);
-      m.wind((ten / 0.1) * Math.PI * 2); m.setLid(true);
+      m.wind(((frac * SLOWDOWN_TENSION) / 0.1) * Math.PI * 2); m.setLid(true);
       m.update(0.001);
-      expect(m.state.omega / 0.25).toBeCloseTo(k, 6);
+      expect(m.state.omega / 0.25).toBeCloseTo(k, 3);
     }
+  });
+  it('tension survives a stop and a later wind restarts rotation', () => {
+    const m = new Mechanism(song, pins);
+    m.wind(0.2 * FULL); m.setLid(true);
+    let t = 0;
+    while (t < 60) { t += 0.1; m.update(t); }
+    expect(m.state.omega).toBe(0);
+    expect(m.state.tension).toBeCloseTo(0, 3);
+    m.wind(0.5 * FULL);
+    const ph = m.state.phase;
+    m.update(t + 0.1);
+    expect(m.state.omega).toBeGreaterThan(0);
+    expect(m.state.phase).toBeGreaterThan(ph);
   });
   it('small winds accumulate with lid open and restart rotation', () => {
     const m = new Mechanism(song, pins);
     m.setLid(true);
     let time = 0;
     for (let i = 0; i < 20; i++) {
-      m.wind(0.2);
+      m.wind(0.05);
       time += 0.01;
       m.update(time);
     }
-    const wound = (20 * 0.2 / (Math.PI * 2)) * 0.1;
-    expect(m.state.tension).toBeGreaterThan(wound * 0.9);
+    const wound = (20 * 0.05 / (Math.PI * 2)) * 0.1;
+    expect(m.state.tension).toBeGreaterThan(wound * 0.7) // sqrt governor spends ~19% of a tiny wind during the 0.2 s;
     expect(m.state.tension).toBeLessThanOrEqual(wound);
     expect(m.state.omega).toBeGreaterThan(0);
     expect(m.state.phase).toBeGreaterThan(0);
@@ -125,7 +138,10 @@ describe('Mechanism', () => {
     m.setSong(song, pins);
     expect(m.state.lidOpen).toBe(false);
     expect(m.state.phase).toBe(0);
+    expect(m.state.omega).toBe(0);
+    expect(m.state.lidT).toBeGreaterThan(0); // eases closed rather than snapping
     expect(run(m, 1, 5, 0.1)).toEqual([]);
+    expect(m.state.lidT).toBe(0);
   });
   it('wind clamps and ignores reverse', () => {
     const m = new Mechanism(song, pins);

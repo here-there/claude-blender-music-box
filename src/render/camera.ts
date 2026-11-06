@@ -69,3 +69,17 @@ export function dampOrbit(current: OrbitState, goal: OrbitState, dt: number, tau
   c[1] += (g[1] - c[1]) * k;
   c[2] += (g[2] - c[2]) * k;
 }
+
+/** Wraps an angle to (-π, π]. */
+export function wrapToPi(a: number): number {
+  const t = a - Math.PI * 2 * Math.floor((a + Math.PI) / (Math.PI * 2));
+  return t === -Math.PI ? Math.PI : t;
+}
+
+/** Default orbit, with yaw reached by the shortest turn from `current` (never whirls through accumulated turns). */
+export function resetOrbit(current: OrbitState): OrbitState {
+  const d = clampOrbit({ ...DEFAULT_ORBIT, target: [...DEFAULT_ORBIT.target] });
+  const delta = DEFAULT_ORBIT.yaw - current.yaw;
+  if (Math.abs(delta) > Math.PI) d.yaw = current.yaw + wrapToPi(delta); // else already the shortest way: land exactly
+  return d;
+}

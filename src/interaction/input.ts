@@ -2,7 +2,7 @@ import type { MusicBoxAudio } from "../audio/engine";
 import type { Mechanism } from "../mechanism/mechanism";
 import type { Vec3 } from "../meta";
 import { decodeId, partId } from "../parts";
-import { cameraMatrices, clampOrbit, DEFAULT_ORBIT, type OrbitState } from "../render/camera";
+import { cameraMatrices, clampOrbit, resetOrbit, type OrbitState } from "../render/camera";
 import type { Renderer } from "../render/renderer";
 import { labelFor } from "./labels";
 import type { Ui } from "./ui";
@@ -16,6 +16,8 @@ export interface InputDeps {
   /** Goal orbit (main eases the rendered camera toward it). */
   getOrbit(): OrbitState;
   setOrbit(s: OrbitState): void;
+  /** Rendered (damped) orbit: what is actually on screen, used to project the winding pivot. */
+  getRenderedOrbit?(): OrbitState;
   /** Renderer output size in physical pixels (picking coordinates). */
   targetSize(): readonly [number, number];
   /** Winding key: world pivot (node translation) and world spin axis. */
@@ -114,7 +116,7 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
   /** Starts winding around the key's projected pivot; false when the pivot is behind the camera. */
   const beginWind = (d: Drag): boolean => {
     const rect = canvas.getBoundingClientRect();
-    const cam = cameraMatrices(deps.getOrbit(), rect.width / Math.max(1, rect.height));
+    const cam = cameraMatrices((deps.getRenderedOrbit ?? deps.getOrbit)(), rect.width / Math.max(1, rect.height));
     const c = projectToCss(cam.viewProjection, deps.key.pivot, rect);
     if (!c) return false;
     const { pivot, axis } = deps.key;
@@ -219,7 +221,7 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
 
   const onDblClick = (): void => {
     if (performance.now() - lastToggle < DBLCLICK_LID_MS) return; // double-click on the lid is a lid click, not a reset
-    deps.setOrbit(clampOrbit({ ...DEFAULT_ORBIT, target: [...DEFAULT_ORBIT.target] }));
+    deps.setOrbit(resetOrbit(deps.getOrbit()));
   };
 
   canvas.addEventListener("pointerdown", onPointerDown);

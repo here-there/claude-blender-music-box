@@ -2,15 +2,10 @@ import type { Song, ArrangedPin } from '../songs/types';
 
 export const WIND_PER_KEY_TURN = 0.1;
 export const TENSION_PER_REV = 0.3;
-export const SLOWDOWN_TENSION = 0.15;
+export const SLOWDOWN_TENSION = 0.075;
 export const LID_SECONDS = 0.6;
 export const MAX_STEP = 0.1;
 const TENSION_EPS = 1e-4;
-/**
- * smoothstep tail never reaches 0; below this fraction of omega0 the cylinder counts as stopped (tension untouched).
- * 0.3 (Ruling R12): the audible slowdown lasts ~8-11 s for the shipped songs (1e-3 took 40-150 s).
- */
-export const STOP_OMEGA_FRACTION = 0.3;
 
 export interface PluckEvent { tooth: number; pinIndex: number; time: number; velocity: number }
 export interface MechanismState {
@@ -54,8 +49,7 @@ export class Mechanism {
     this.configure();
     this.s.phase = 0;
     this.s.omega = 0;
-    this.s.lidOpen = false;
-    this.s.lidT = 0;
+    this.s.lidOpen = false; // lidT keeps easing down in update()
     this.fresh = true;
   }
 
@@ -81,9 +75,8 @@ export class Mechanism {
       const t0 = s.time;
       s.lidT = Math.min(1, Math.max(0, s.lidT + (s.lidOpen ? dt : -dt) / LID_SECONDS));
       if (s.lidOpen && s.tension > 0) {
-        const u = Math.min(1, s.tension / SLOWDOWN_TENSION);
-        s.omega = this.omega0 * u * u * (3 - 2 * u);
-        if (s.omega < this.omega0 * STOP_OMEGA_FRACTION) s.omega = 0;
+        // Ruling R13: sqrt governor decelerates at a constant rate and spends all tension (TENSION_EPS snap ends it).
+        s.omega = this.omega0 * Math.sqrt(Math.min(1, s.tension / SLOWDOWN_TENSION));
         let dPhase = s.omega * dt;
         const cost = dPhase * TENSION_PER_REV;
         if (cost >= s.tension) dPhase = s.tension / TENSION_PER_REV;

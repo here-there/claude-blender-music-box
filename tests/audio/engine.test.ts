@@ -124,3 +124,22 @@ describe("createMusicBoxAudio", () => {
     expect(() => audio.click()).not.toThrow();
   });
 });
+
+describe("createMusicBoxAudio without AudioContext", () => {
+  it("returns a silent no-op when the constructor throws", async () => {
+    const g = globalThis as unknown as { AudioContext?: unknown };
+    const prev = g.AudioContext;
+    g.AudioContext = class { constructor() { throw new Error("blocked"); } };
+    try {
+      const audio = createMusicBoxAudio();
+      expect(audio.running).toBe(false);
+      await audio.resume();
+      audio.play(69, 1, 1, 0);
+      audio.click();
+      audio.cancelAll();
+      expect(audio.running).toBe(false);
+    } finally {
+      g.AudioContext = prev;
+    }
+  });
+});

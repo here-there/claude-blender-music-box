@@ -45,8 +45,23 @@ function makeImpulse(ctx: BaseAudioContext): AudioBuffer {
 
 interface Voice { oscs: OscillatorNode[]; gains: GainNode[]; }
 
+function silentAudio(): MusicBoxAudio {
+  return {
+    async resume() {},
+    get running() { return false; },
+    play() {},
+    click() {},
+    cancelAll() {},
+  };
+}
+
 export function createMusicBoxAudio(injected?: BaseAudioContext): MusicBoxAudio {
-  const ctx: BaseAudioContext = injected ?? new AudioContext({ latencyHint: "interactive" });
+  let ctx: BaseAudioContext;
+  try {
+    ctx = injected ?? new AudioContext({ latencyHint: "interactive" });
+  } catch {
+    return silentAudio(); // spec §4: visuals keep running without sound
+  }
 
   // bus -> peaks -> (dry + convolver->wet) -> compressor -> destination
   const bus = ctx.createGain();

@@ -17,6 +17,7 @@ const HINTS: Record<FatalKind, string> = {
 };
 
 export function showFatal(kind: FatalKind, detail?: string): void {
+  document.querySelector(".loading")?.remove();
   document.querySelector(".fatal")?.remove();
   const panel = document.createElement("div");
   panel.className = "fatal";

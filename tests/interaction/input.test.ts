@@ -146,6 +146,14 @@ describe("attachInput", () => {
     expect(t.orbit()).toEqual(clampOrbit(DEFAULT_ORBIT));
   });
 
+  it("double-click resets yaw by the shortest angle, not through accumulated turns", () => {
+    const t = setup(0);
+    const far = DEFAULT_ORBIT.yaw + 4 * Math.PI + 0.2;
+    t.deps.setOrbit({ ...t.orbit(), yaw: far });
+    t.fire("dblclick", 400, 300);
+    expect(Math.abs(t.orbit().yaw - far)).toBeLessThan(0.21);
+  });
+
   it("drags elsewhere orbit 0.005 rad per pixel, clamped", async () => {
     const t = setup(0);
     t.ptr("pointerdown", 400, 300);

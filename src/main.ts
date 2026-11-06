@@ -10,7 +10,7 @@ import { createUi } from "./interaction/ui";
 import { clampOrbit, dampOrbit, DEFAULT_ORBIT, type OrbitState } from "./render/camera";
 import { createRenderer, easeLid, type RenderState } from "./render/renderer";
 import { PUSH_SECONDS } from "./render/vibration";
-import { createMusicBoxAudio } from "./audio/engine";
+import { createMusicBoxAudio, type MusicBoxAudio } from "./audio/engine";
 import { arrange } from "./songs/arrange";
 import { COMB_PITCHES } from "./songs/comb";
 import { SONGS } from "./songs/library";
@@ -23,7 +23,7 @@ const INITIAL_TENSION = 0.5;
 /** Debug: `?slow=0.25` runs the mechanism and animation clock at 0.25× speed. */
 function timeScale(): number {
   const v = Number(new URLSearchParams(location.search).get("slow"));
-  return Number.isFinite(v) && v > 0 ? v : 1;
+  return Number.isFinite(v) && v > 0 && v <= 1 ? v : 1;
 }
 
 const BASE = import.meta.env.BASE_URL;
@@ -39,11 +39,13 @@ async function main(): Promise<void> {
     showFatal("no-webgpu");
     return;
   }
+  let deviceLost = false;
   try {
     const gpu = await init();
-    let deviceLost = false;
+    let audio: MusicBoxAudio | null = null;
     void gpu.lost.then((info) => {
       deviceLost = true;
+      audio?.cancelAll();
       showFatal("device-lost", info.message || undefined);
     });
     const canvas = document.querySelector<HTMLCanvasElement>("#stage")!;
@@ -68,7 +70,9 @@ async function main(): Promise<void> {
     // so a still-ringing tooth is not cut short before the next pin reaches it.
     const pending: PluckEvent[] = [];
     const scale = timeScale();
-    const audio = createMusicBoxAudio();
+    const audioEngine = createMusicBoxAudio();
+    audio = audioEngine;
+    if (deviceLost) audioEngine.cancelAll();
 
     const ui = createUi(document.body, SONGS, (id) => {
       const next = SONGS.find((s) => s.id === id);
@@ -88,13 +92,16 @@ async function main(): Promise<void> {
         orbitGoal.yaw = o.yaw; orbitGoal.pitch = o.pitch; orbitGoal.distance = o.distance;
         orbitGoal.target[0] = o.target[0]; orbitGoal.target[1] = o.target[1]; orbitGoal.target[2] = o.target[2];
       },
+      getRenderedOrbit: () => state.orbit,
       targetSize: () => stage.size,
       key: keyRig(parts.get("key")),
     });
 
     const t0 = performance.now();
     let lastMs = t0;
+    let rendered = false;
     const tick = (nowMs: number): void => {
+      if (deviceLost) return;
       const now = ((nowMs - t0) / 1000) * scale;
       dampOrbit(state.orbit, orbitGoal, Math.min(0.1, (nowMs - lastMs) / 1000));
       lastMs = nowMs;
@@ -121,14 +128,22 @@ async function main(): Promise<void> {
       try {
         renderer.render(state);
       } catch (err) {
-        if (!deviceLost) showFatal("load", err instanceof Error ? err.message : String(err));
+        if (!deviceLost) { document.querySelector(".loading")?.remove(); showFatal("load", err instanceof Error ? err.message : String(err)); }
         return;
+      }
+      if (!rendered) {
+        rendered = true;
+        document.querySelector(".loading")?.remove();
       }
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   } catch (err) {
-    showFatal("load", err instanceof Error ? err.message : String(err));
+    const detail = err instanceof Error ? err.message : String(err);
+    if (deviceLost) return; // keep the device-lost panel
+    document.querySelector(".loading")?.remove();
+    const code = (err as { code?: unknown } | null)?.code;
+    showFatal(code === "VGPU-RING1-UNSUPPORTED" ? "no-webgpu" : "load", detail);
   }
 }
 
