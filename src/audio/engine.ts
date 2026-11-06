@@ -17,6 +17,8 @@ const LIFETIME_DECAYS = 5;
 const MASTER_GAIN = 0.35;
 const REVERB_SECONDS = 0.6;
 const WET = 0.18;
+/** cancelAll fade-out: long enough to avoid a click, short enough to feel immediate. */
+const CANCEL_FADE = 0.015;
 
 /** mulberry32: deterministic PRNG so the reverb IR is identical every run. */
 function mulberry32(seed: number): () => number {
@@ -128,9 +130,26 @@ export function createMusicBoxAudio(injected?: BaseAudioContext): MusicBoxAudio 
       src.start(ctx.currentTime);
     },
     cancelAll() {
+      const now = ctx.currentTime;
+      const end = now + CANCEL_FADE;
       for (const v of [...voices]) {
-        for (const o of v.oscs) { try { o.stop(ctx.currentTime); } catch { /* not started */ } }
-        dispose(v);
+        // Forget the voice now (a later cancelAll has nothing to do); its nodes are released by the
+        // oscillator's onended once the fade has played out.
+        voices.delete(v);
+        const release = (): void => {
+          for (const o of v.oscs) o.disconnect();
+          for (const g of v.gains) g.disconnect();
+        };
+        const first = v.oscs[0];
+        if (first) first.onended = release;
+        for (const g of v.gains) {
+          const p = g.gain;
+          const held = p.value;
+          p.cancelScheduledValues(now);
+          p.setValueAtTime(held, now);
+          p.linearRampToValueAtTime(0, end);
+        }
+        for (const o of v.oscs) { try { o.stop(end); } catch { /* already stopped */ } }
       }
     },
   };

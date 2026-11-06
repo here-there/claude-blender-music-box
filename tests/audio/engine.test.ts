@@ -7,7 +7,7 @@ class Param {
   setValueAtTime(v: number, t: number) { this.calls.push(["set", v, t]); return this; }
   linearRampToValueAtTime(v: number, t: number) { this.calls.push(["lin", v, t]); return this; }
   exponentialRampToValueAtTime(v: number, t: number) { this.calls.push(["exp", v, t]); return this; }
-  cancelScheduledValues() { return this; }
+  cancelScheduledValues(t: number) { this.calls.push(["cancel", NaN, t]); return this; }
 }
 class Node {
   connections: unknown[] = [];
@@ -16,20 +16,21 @@ class Node {
   disconnect() { this.disconnected = true; }
 }
 class Osc extends Node {
-  type = "sine"; frequency = new Param();
+  type = "sine"; frequency = new Param(); onended: (() => void) | null = null;
   startT: number | null = null; stopTs: number[] = [];
   start(t: number) { this.startT = t; }
   stop(t: number) { this.stopTs.push(t); }
 }
 class Src extends Osc { buffer: unknown = null; loop = false; }
 class FakeCtx {
+  gains: (Node & { gain: Param })[] = [];
   currentTime = 10; state = "suspended"; sampleRate = 48000;
   destination = new Node();
   oscs: Osc[] = [];
   resumed = 0;
   createOscillator() { const o = new Osc(); this.oscs.push(o); return o; }
   createBufferSource() { return new Src(); }
-  createGain() { const g = new Node() as Node & { gain: Param }; g.gain = new Param(); return g; }
+  createGain() { const g = new Node() as Node & { gain: Param }; g.gain = new Param(); this.gains.push(g); return g; }
   createBiquadFilter() { const f = new Node() as Node & { type: string; frequency: Param; gain: Param; Q: Param }; f.type = ""; f.frequency = new Param(); f.gain = new Param(); f.Q = new Param(); return f; }
   createConvolver() { return Object.assign(new Node(), { buffer: null as unknown }); }
   createDynamicsCompressor() { const c = new Node() as Node & Record<string, Param>; for (const k of ["threshold", "knee", "ratio", "attack", "release"]) c[k] = new Param(); return c; }
@@ -74,15 +75,47 @@ describe("createMusicBoxAudio", () => {
     audio.play(57, 1, 10.03, 10);
     expect(ctx.oscs[0]!.stopTs[0]).toBeCloseTo(10.03 + 5 * 3, 6);
   });
-  it("cancelAll stops every scheduled voice", async () => {
+  it("cancelAll fades every voice out over 10-20 ms, then stops it", async () => {
+    const { ctx, audio } = make();
+    await audio.resume();
+    const before = ctx.gains.length;
+    audio.play(69, 1, 10.03, 10);
+    audio.play(72, 1, 10.1, 10);
+    const voiceGains = ctx.gains.slice(before);
+    expect(voiceGains).toHaveLength(8);
+    ctx.currentTime = 10.5;
+    audio.cancelAll();
+    expect(ctx.oscs).toHaveLength(8);
+    for (const o of ctx.oscs) {
+      // the last stop() call is the cancel, well before the natural end (10.03 + 15 s)
+      const stop = o.stopTs[o.stopTs.length - 1]!;
+      expect(stop).toBeGreaterThanOrEqual(10.5 + 0.01);
+      expect(stop).toBeLessThanOrEqual(10.5 + 0.02 + 1e-9);
+    }
+    for (const g of voiceGains) {
+      const calls = g.gain.calls;
+      const cancelIdx = calls.findIndex((c) => c[0] === "cancel" && c[2] === 10.5);
+      expect(cancelIdx).toBeGreaterThanOrEqual(0);
+      const ramp = calls.slice(cancelIdx).find((c) => c[0] === "lin" && c[1] === 0);
+      expect(ramp).toBeDefined();
+      expect(ramp![2]!).toBeGreaterThanOrEqual(10.51);
+      expect(ramp![2]!).toBeLessThanOrEqual(10.52 + 1e-9);
+      // not cut off before the fade finishes
+      expect(g.disconnected).toBe(false);
+    }
+  });
+  it("cancelAll releases the nodes once the faded voice has ended", async () => {
     const { ctx, audio } = make();
     await audio.resume();
     audio.play(69, 1, 10.03, 10);
-    audio.play(72, 1, 10.1, 10);
     audio.cancelAll();
-    expect(ctx.oscs).toHaveLength(8);
-    for (const o of ctx.oscs) expect(o.stopTs.length).toBeGreaterThanOrEqual(1);
-    expect(ctx.oscs.every((o) => o.disconnected)).toBe(true);
+    const o = ctx.oscs[0] as Osc & { onended: (() => void) | null };
+    o.onended?.();
+    expect(ctx.oscs.every((x) => x.disconnected)).toBe(true);
+    // a second cancelAll has nothing left to stop
+    const stops = ctx.oscs.map((x) => x.stopTs.length);
+    audio.cancelAll();
+    expect(ctx.oscs.map((x) => x.stopTs.length)).toEqual(stops);
   });
   it("click does nothing while suspended and does not throw when running", async () => {
     const { audio } = make();

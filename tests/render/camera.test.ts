@@ -8,8 +8,8 @@ describe("camera", () => {
     expect(c.distance).toBe(0.6);
   });
   it("clamps pitch and distance to the lower limits", () => {
-    const c = clampOrbit({ ...DEFAULT_ORBIT, pitch: -1, distance: 0.01 });
-    expect(c.pitch).toBe(0.1);
+    const c = clampOrbit({ ...DEFAULT_ORBIT, pitch: -3, distance: 0.01 });
+    expect(c.pitch).toBe(-1.3);
     expect(c.distance).toBe(0.12);
   });
   it("leaves in-range values and does not mutate the input", () => {
@@ -36,5 +36,22 @@ describe("camera", () => {
     const { position } = cameraMatrices({ ...DEFAULT_ORBIT, distance: 50 }, 1);
     const t = DEFAULT_ORBIT.target;
     expect(Math.hypot(position[0]! - t[0], position[1]! - t[1], position[2]! - t[2])).toBeCloseTo(0.6, 4);
+  });
+});
+
+describe("dampOrbit", () => {
+  it("moves toward the goal by 1 − e^(−dt/τ) and leaves dt = 0 untouched", async () => {
+    const { dampOrbit } = await import("../../src/render/camera");
+    const cur = { yaw: 0, pitch: 0, distance: 0.2, target: [0, 0, 0] as [number, number, number] };
+    const goal = { yaw: 1, pitch: 0.5, distance: 0.4, target: [1, 2, 3] as [number, number, number] };
+    dampOrbit(cur, goal, 0);
+    expect(cur.yaw).toBe(0);
+    dampOrbit(cur, goal, 0.12, 0.12);
+    const k = 1 - Math.exp(-1);
+    expect(cur.yaw).toBeCloseTo(k, 9);
+    expect(cur.distance).toBeCloseTo(0.2 + 0.2 * k, 9);
+    expect(cur.target[2]).toBeCloseTo(3 * k, 9);
+    for (let i = 0; i < 200; i++) dampOrbit(cur, goal, 1 / 60, 0.12);
+    expect(cur.pitch).toBeCloseTo(0.5, 6);
   });
 });

@@ -3,9 +3,11 @@ import { hasWebGpu, showFatal } from "./app/errors";
 import { pinInstances } from "./geometry/pins";
 import { parseGlb } from "./gltf/glb";
 import { uploadModel } from "./gltf/upload";
-import { loadMeta } from "./meta";
-import { Mechanism, phaseAt, type PluckEvent } from "./mechanism/mechanism";
-import { DEFAULT_ORBIT } from "./render/camera";
+import { loadMeta, type Vec3 } from "./meta";
+import { Mechanism, phaseAt, WIND_PER_KEY_TURN, type PluckEvent } from "./mechanism/mechanism";
+import { attachInput } from "./interaction/input";
+import { createUi } from "./interaction/ui";
+import { clampOrbit, dampOrbit, DEFAULT_ORBIT, type OrbitState } from "./render/camera";
 import { createRenderer, easeLid, type RenderState } from "./render/renderer";
 import { PUSH_SECONDS } from "./render/vibration";
 import { createMusicBoxAudio } from "./audio/engine";
@@ -15,8 +17,8 @@ import { SONGS } from "./songs/library";
 
 /** Mechanism runs this far ahead of the frame clock so audio (Task 9) can schedule plucks precisely. */
 const LOOKAHEAD = 0.05;
-/** Temporary until Task 11's key interaction: full wind = 10 key turns (WIND_PER_KEY_TURN = 0.1). */
-const FULL_WIND_RADIANS = 2 * Math.PI * 10;
+/** Spring tension at page load (the lid starts closed: opening it plays). */
+const INITIAL_TENSION = 0.5;
 
 /** Debug: `?slow=0.25` runs the mechanism and animation clock at 0.25× speed. */
 function timeScale(): number {
@@ -49,13 +51,12 @@ async function main(): Promise<void> {
     const arranged = arrange(song);
     const mechanism = new Mechanism(song, arranged);
     renderer.setPins(pinInstances(meta, song, arranged));
-    // Temporary (Task 11 replaces with interaction): start fully wound with the lid opening.
-    mechanism.wind(FULL_WIND_RADIANS);
-    mechanism.setLid(true);
+    mechanism.wind((INITIAL_TENSION / WIND_PER_KEY_TURN) * 2 * Math.PI);
 
+    const orbitGoal: OrbitState = clampOrbit(DEFAULT_ORBIT);
     const state: RenderState = {
       time: 0, cylinderAngle: 0, keyAngle: 0, lidOpen01: 0,
-      orbit: { ...DEFAULT_ORBIT, target: [...DEFAULT_ORBIT.target] },
+      orbit: clampOrbit(DEFAULT_ORBIT),
       plucks: new Float32Array(36),
     };
     // Plucks are produced LOOKAHEAD early; a tooth's slot is overwritten only when its push-up phase starts,
@@ -63,11 +64,35 @@ async function main(): Promise<void> {
     const pending: PluckEvent[] = [];
     const scale = timeScale();
     const audio = createMusicBoxAudio();
-    // Temporary until Task 11 (lid/key gestures): first click anywhere unlocks audio.
-    addEventListener("pointerdown", () => void audio.resume(), { once: true });
+
+    const ui = createUi(document.body, SONGS, (id) => {
+      const next = SONGS.find((s) => s.id === id);
+      if (!next) return;
+      audio.cancelAll();
+      const pins = arrange(next);
+      mechanism.setSong(next, pins);
+      renderer.setPins(pinInstances(meta, next, pins));
+      // Old vibrations stop with the old song.
+      pending.length = 0;
+      state.plucks.fill(0);
+    });
+    attachInput(canvas, {
+      renderer, mechanism, audio, ui,
+      getOrbit: () => orbitGoal,
+      setOrbit: (o) => {
+        orbitGoal.yaw = o.yaw; orbitGoal.pitch = o.pitch; orbitGoal.distance = o.distance;
+        orbitGoal.target[0] = o.target[0]; orbitGoal.target[1] = o.target[1]; orbitGoal.target[2] = o.target[2];
+      },
+      targetSize: () => stage.size,
+      key: keyRig(parts.get("key")),
+    });
+
     const t0 = performance.now();
+    let lastMs = t0;
     const tick = (nowMs: number): void => {
       const now = ((nowMs - t0) / 1000) * scale;
+      dampOrbit(state.orbit, orbitGoal, Math.min(0.1, (nowMs - lastMs) / 1000));
+      lastMs = nowMs;
       const events = mechanism.update(now + LOOKAHEAD);
       pending.push(...events);
       // Audio stays in wall time (mechanism clock = wall * scale).
@@ -83,7 +108,7 @@ async function main(): Promise<void> {
         pending.splice(i, 1);
       }
       const ms = mechanism.state;
-      if (ms.tension === 0 && ms.omega === 0 && ms.lidT >= 1) mechanism.wind(FULL_WIND_RADIANS); // temporary: keep playing
+      ui.setTension(ms.tension);
       state.time = now;
       state.cylinderAngle = -2 * Math.PI * phaseAt(ms, now); // Ruling R6
       state.keyAngle = ms.keyAngle;
@@ -100,6 +125,18 @@ async function main(): Promise<void> {
   } catch (err) {
     showFatal("load", err instanceof Error ? err.message : String(err));
   }
+}
+
+/** Key pivot (node translation) and spin axis in world space, from the glTF node and its extras.axis. */
+function keyRig(part: { matrix: Float32Array; extras: Record<string, unknown> } | undefined): { pivot: Vec3; axis: Vec3 } {
+  if (!part) return { pivot: [0, 0, 0], axis: [0, 1, 0] };
+  const m = part.matrix;
+  const a = Array.isArray(part.extras.axis) ? (part.extras.axis as number[]) : [0, 1, 0];
+  const [x, y, z] = [a[0] ?? 0, a[1] ?? 1, a[2] ?? 0];
+  return {
+    pivot: [m[12]!, m[13]!, m[14]!],
+    axis: [m[0]! * x + m[4]! * y + m[8]! * z, m[1]! * x + m[5]! * y + m[9]! * z, m[2]! * x + m[6]! * y + m[10]! * z],
+  };
 }
 
 void main();

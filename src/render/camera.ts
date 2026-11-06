@@ -7,7 +7,11 @@ export interface OrbitState {
   target: [number, number, number];
 }
 
-export const PITCH_LIMITS = [0.1, 1.45] as const;
+/**
+ * Below the horizon is allowed (Task 11): the winding key sits under the case, between the felt feet,
+ * so the user must be able to orbit underneath to grab it.
+ */
+export const PITCH_LIMITS = [-1.3, 1.45] as const;
 export const DISTANCE_LIMITS = [0.12, 0.6] as const;
 export const LENS = { fov: 35, near: 0.005, far: 5 } as const;
 
@@ -52,4 +56,16 @@ export function cameraMatrices(s: OrbitState, aspect: number, out?: CameraMatric
   const m = { view: out?.view ?? new Float32Array(16), viewProjection: out?.viewProjection ?? new Float32Array(16) };
   viewMatrices(pose, projection, m);
   return { view: m.view, viewProjection: m.viewProjection, position: pose.position };
+}
+
+/** Exponential approach of `current` toward `goal` (in place) with time constant `tau` seconds. */
+export function dampOrbit(current: OrbitState, goal: OrbitState, dt: number, tau = 0.12): void {
+  const k = dt > 0 ? 1 - Math.exp(-dt / tau) : 0;
+  current.yaw += (goal.yaw - current.yaw) * k;
+  current.pitch += (goal.pitch - current.pitch) * k;
+  current.distance += (goal.distance - current.distance) * k;
+  const c = current.target, g = goal.target;
+  c[0] += (g[0] - c[0]) * k;
+  c[1] += (g[1] - c[1]) * k;
+  c[2] += (g[2] - c[2]) * k;
 }

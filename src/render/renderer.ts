@@ -5,10 +5,12 @@ import type { GpuPart } from "../gltf/upload";
 import { toothInstances, toothMesh } from "../geometry/comb";
 import { pinMesh } from "../geometry/pins";
 import type { MusicBoxMeta, Vec3 } from "../meta";
+import { PART_NAMES, partId, type PartName } from "../parts";
 import { cameraMatrices, type CameraMatrices, type OrbitState } from "./camera";
 import { createEnvironment, envCubeView, SPECULAR_LEVELS } from "./environment";
 import combShader from "./shaders/comb.wgsl";
 import glassShader from "./shaders/glass.wgsl";
+import idShader from "./shaders/id.wgsl";
 import pbrShader from "./shaders/pbr.wgsl";
 import pinsShader from "./shaders/pins.wgsl";
 import postShader from "./shaders/post.wgsl";
@@ -29,7 +31,11 @@ export interface Renderer {
   /** Per pin [x, angle0, tooth, 0] (pinInstances); replaces the previous set. */
   setPins(instances: Float32Array): void;
   render(state: RenderState): void;
-  pick(cssX: number, cssY: number): Promise<number>; // Task 11: PartId encoding, 0 = none
+  /**
+   * ID (src/parts.ts encoding, 0 = nothing) under one output-target pixel, as of the last render().
+   * Convert pointer CSS coordinates with interaction/winding.ts `cssToTargetPixel`. Glass is not pickable.
+   */
+  pick(px: number, py: number): Promise<number>;
   dispose(): void;
 }
 
@@ -189,6 +195,7 @@ interface SceneObject {
   draws: Draw[];   // opaque, lit
   casters: Draw[]; // opaque, shadow map
   glass: Draw[];   // blended, drawn last
+  ids: Draw[];     // opaque, ID pass (picking)
 }
 
 /**
@@ -241,6 +248,13 @@ export async function createRenderer(
   const lighting = { scene: sceneBlock, irradianceMap, specularMap, envSampler, shadowMap, shadowSampler };
   const casterState = { cull: "none", depth: { biasSlopeScale: SHADOW.biasSlopeScale }, writeMask: [] } as const;
   const shadowEntry = { vertex: "vs_shadow", fragment: "fs_shadow" };
+  // ---- Picking: 1×1 ID target; the pass viewport shifts the requested pixel onto it ----
+  const idEntry = {
+    part: { vertex: "vs_part", fragment: "fs_id" },
+    tooth: { vertex: "vs_tooth", fragment: "fs_id" },
+    pin: { vertex: "vs_pin", fragment: "fs_id" },
+  };
+  const idTarget = target(gpu, { size: [1, 1], format: "rgba8unorm", depth: true, label: "pick-id" });
 
   const materialSampler = sampler(gpu, {
     minFilter: "linear", magFilter: "linear", mipmapFilter: "linear",
@@ -252,8 +266,9 @@ export async function createRenderer(
   for (const [name, part] of parts) {
     const obj: SceneObject = {
       name, node: part.matrix, world: new Float32Array(part.matrix), motion: motionFor(name, part, meta),
-      models: [], draws: [], casters: [], glass: [],
+      models: [], draws: [], casters: [], glass: [], ids: [],
     };
+    const ident = uniforms(gpu, { id: (PART_NAMES as readonly string[]).includes(name) ? partId(name as PartName) : 0, pad0: 0, pad1: 0, pad2: 0 });
     for (const [i, prim] of part.primitives.entries()) {
       const model = uniforms<ModelValues>(gpu, {
         world: obj.world, baseColor: prim.factors.baseColor, metallic: prim.factors.metallic, roughness: prim.factors.roughness,
@@ -284,6 +299,10 @@ export async function createRenderer(
       obj.casters.push(draw(gpu, {
         shader: pbrShader, entry: shadowEntry, geometry: prim.geometry, label: `${name}.${i}.shadow`, ...casterState,
         set: { scene: sceneBlock, model },
+      }));
+      obj.ids.push(draw(gpu, {
+        shader: idShader, entry: idEntry.part, geometry: prim.geometry, label: `${name}.${i}.id`,
+        set: { scene: sceneBlock, model, ident },
       }));
     }
     if (obj.models.length) objects.push(obj);
@@ -340,12 +359,17 @@ export async function createRenderer(
     shader: combShader, entry: shadowEntry, geometry: toothGeometry, label: "teeth.shadow", ...casterState,
     set: { scene: sceneBlock, comb: combBlock },
   });
+  const teethId = draw(gpu, {
+    shader: idShader, entry: idEntry.tooth, geometry: toothGeometry, label: "teeth.id", cull: "back",
+    set: { scene: sceneBlock, comb: combBlock },
+  });
 
   // ---- Pins: one instance per arranged note, rebuilt by setPins ----
   const pinBase = pinMesh(meta.pinRadius, meta.pinHeight);
   let pinGeometry: Geometry | null = null;
   let pins: Draw | null = null;
   let pinsCaster: Draw | null = null;
+  let pinsId: Draw | null = null;
   const pinValues = {
     center: new Float32Array(meta.cylinder.center), cylinderAngle: 0, radius: meta.cylinder.radius,
     pad0: 0, pad1: 0, pad2: 0,
@@ -354,9 +378,11 @@ export async function createRenderer(
   const disposePins = (): void => {
     pins?.dispose();
     pinsCaster?.dispose();
+    pinsId?.dispose();
     pinGeometry?.destroy();
     pins = null;
     pinsCaster = null;
+    pinsId = null;
     pinGeometry = null;
   };
 
@@ -406,6 +432,29 @@ export async function createRenderer(
   });
   const encodeSrgb = output.format.endsWith("-srgb") ? 0 : 1;
 
+  let pickChain: Promise<number> = Promise.resolve(0);
+  const pickNow = async (px: number, py: number): Promise<number> => {
+    const [w, h] = output.size;
+    if (disposed || !rendered || !(px >= 0 && py >= 0 && px < w && py < h)) return 0;
+    const x = Math.floor(px), y = Math.floor(py);
+    const f = frame(gpu);
+    try {
+      // Same camera / animation uniforms as the last render(): only the viewport differs.
+      f.pass({ target: idTarget, clear: [0, 0, 0, 0], clearDepth: 1, viewport: { x: -x, y: -y, width: w, height: h } }, (pass) => {
+        for (const o of objects) for (const d of o.ids) pass.draw(d);
+        pass.draw(teethId);
+        if (pinsId) pass.draw(pinsId);
+      });
+      f.submit();
+    } catch (err) {
+      f.cancel();
+      throw err;
+    }
+    const px4 = await idTarget.color.read({ mipLevel: 0, region: "all" });
+    return (px4[0] ?? 0) | ((px4[1] ?? 0) << 8);
+  };
+  let rendered = false;
+
   const cam: CameraMatrices = { view: new Float32Array(16), viewProjection: new Float32Array(16), position: new Float32Array(3) };
   let disposed = false;
 
@@ -421,6 +470,10 @@ export async function createRenderer(
       pins = draw(gpu, { shader: pinsShader, geometry: pinGeometry, label: "pins", cull: "back", set: { ...lighting, pins: pinsBlock } });
       pinsCaster = draw(gpu, {
         shader: pinsShader, entry: shadowEntry, geometry: pinGeometry, label: "pins.shadow", ...casterState,
+        set: { scene: sceneBlock, pins: pinsBlock },
+      });
+      pinsId = draw(gpu, {
+        shader: idShader, entry: idEntry.pin, geometry: pinGeometry, label: "pins.id", cull: "back",
         set: { scene: sceneBlock, pins: pinsBlock },
       });
     },
@@ -448,27 +501,33 @@ export async function createRenderer(
         });
         f.pass(output, post);
         f.submit();
+        rendered = true;
       } catch (err) {
         f.cancel();
         throw err;
       }
     },
 
-    pick(_cssX: number, _cssY: number): Promise<number> {
-      return Promise.resolve(0); // Task 11
+    pick(px: number, py: number): Promise<number> {
+      // Serialised: each pick renders into the shared 1×1 target and reads it back before the next one.
+      const run = (): Promise<number> => pickNow(px, py);
+      pickChain = pickChain.then(run, run);
+      return pickChain;
     },
 
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      for (const o of objects) for (const d of [...o.draws, ...o.casters, ...o.glass]) d.dispose();
+      for (const o of objects) for (const d of [...o.draws, ...o.casters, ...o.glass, ...o.ids]) d.dispose();
       teeth.dispose();
       teethCaster.dispose();
+      teethId.dispose();
       toothGeometry.destroy();
       disposePins();
       post.dispose();
       (hdr as Target & { destroy?: () => void }).destroy?.();
       (shadowMap as Target & { destroy?: () => void }).destroy?.();
+      (idTarget as Target & { destroy?: () => void }).destroy?.();
       env.irradiance.destroy();
       env.specular.destroy();
     },
