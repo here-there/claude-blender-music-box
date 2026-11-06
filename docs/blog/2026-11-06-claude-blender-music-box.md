@@ -1,7 +1,7 @@
 # 用 Claude + Blender 从零做一个会“真转”的八音盒
 
 > 在线演示：【演示链接】——打开盒盖就会开始播放，转到盒底可以拖动钥匙上弦。
-> 源码：【仓库链接】
+> 源码：[github.com/here-there/claude-blender-music-box](https://github.com/here-there/claude-blender-music-box)（错误版本见标签 [`v0.1-gear-misaligned`](https://github.com/here-there/claude-blender-music-box/tree/v0.1-gear-misaligned)）
 
 ![成品：打开盒盖的八音盒](assets/final/hero.jpg)
 
@@ -202,7 +202,7 @@ omega = omega0 * Math.sqrt(Math.min(1, tension / slowdownTension));
 
 ![修复后：发条盒齿圈带动滚筒小齿轮](assets/history/after-app-closeup.jpg)
 
-为了这篇文章，错误版本在 git 里打了标签 `v0.1-gear-misaligned`，随时可以切回去复现。
+为了这篇文章，错误版本在 git 里打了标签 [`v0.1-gear-misaligned`](https://github.com/here-there/claude-blender-music-box/tree/v0.1-gear-misaligned)，随时可以切回去复现。
 
 ---
 
