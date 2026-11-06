@@ -5,6 +5,7 @@ import { parseGlb } from "../../src/gltf/glb";
 import { uploadModel } from "../../src/gltf/upload";
 import { validateMeta } from "../../src/meta";
 import { createRenderer, easeLid, type RenderState } from "../../src/render/renderer";
+import { createEnvironment } from "../../src/render/environment";
 import { DEFAULT_ORBIT } from "../../src/render/camera";
 import metaJson from "../../public/musicbox.meta.json";
 import { pinInstances } from "../../src/geometry/pins";
@@ -71,6 +72,56 @@ describe("renderer pins + comb (vgpu/mock)", () => {
     const parts = await uploadModel(gpu, parseGlb(glb()), { decodeImage: async () => null });
     const r = await createRenderer(gpu, target(gpu, { size: [64, 64] }), parts, meta);
     expect(() => r.setPins(new Float32Array(6))).toThrow(RangeError);
+    r.dispose();
+    gpu.dispose();
+  });
+});
+
+/** Records every render pipeline descriptor the device is asked to build. */
+function recordPipelines(gpu: { gpu: GPUDevice }): GPURenderPipelineDescriptor[] {
+  const seen: GPURenderPipelineDescriptor[] = [];
+  const dev = gpu.gpu as GPUDevice & Record<string, unknown>;
+  const sync = dev.createRenderPipeline.bind(dev);
+  const async_ = dev.createRenderPipelineAsync.bind(dev);
+  dev.createRenderPipeline = (d: GPURenderPipelineDescriptor) => { seen.push(d); return sync(d); };
+  dev.createRenderPipelineAsync = (d: GPURenderPipelineDescriptor) => { seen.push(d); return async_(d); };
+  return seen;
+}
+
+describe("environment (vgpu/mock)", () => {
+  it("creates an irradiance cube and a 5-level prefiltered specular cube", async () => {
+    const gpu = await init();
+    const env = createEnvironment(gpu);
+    expect(env.irradiance.size).toEqual([64, 64]);
+    expect(env.irradiance.layers).toBe(6);
+    expect(env.specular.size).toEqual([128, 128]);
+    expect(env.specular.layers).toBe(6);
+    expect(env.specular.mipLevelCount).toBe(5);
+    gpu.dispose();
+  });
+});
+
+describe("renderer shadows + glass (vgpu/mock)", () => {
+  it("renders a frame with a depth32float shadow pass for every opaque kind and a blended glass draw", async () => {
+    const gpu = await init();
+    const pipelines = recordPipelines(gpu);
+    const parts = await uploadModel(gpu, parseGlb(glb()), { decodeImage: async () => null });
+    expect([...parts.values()].some((p) => p.primitives.some((q) => q.blend))).toBe(true);
+    const r = await createRenderer(gpu, target(gpu, { size: [320, 180] }), parts, meta);
+    const song = SONGS[0]!;
+    r.setPins(pinInstances(meta, song, arrange(song)));
+    expect(() => r.render(state({ time: 0.5, cylinderAngle: -0.4, lidOpen01: 1 }))).not.toThrow();
+    // shadow casters: static parts, teeth and pins each get a depth-only pipeline into the depth32float map
+    const shadow = pipelines.filter((d) => d.depthStencil?.format === "depth32float");
+    const shadowEntries = new Set(shadow.map((d) => d.vertex.entryPoint));
+    expect(shadow.length).toBeGreaterThanOrEqual(3);
+    expect(shadowEntries.size).toBeGreaterThanOrEqual(1);
+    const shadowModules = new Set(shadow.map((d) => d.vertex.module));
+    expect(shadowModules.size).toBe(3);
+    // glass: blended, depth-tested but not depth-writing, into the HDR scene target
+    const glass = pipelines.filter((d) => d.fragment?.targets.some((t) => t?.blend) && d.depthStencil?.depthWriteEnabled === false);
+    expect(glass.length).toBeGreaterThanOrEqual(1);
+    expect(() => r.render(state({ time: 0.6, cylinderAngle: -0.5, lidOpen01: 1 }))).not.toThrow();
     r.dispose();
     gpu.dispose();
   });

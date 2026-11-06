@@ -1,12 +1,14 @@
 import { draw, effect, frame, geometry, sampler, target, uniforms, type Draw, type FramePass, type Geometry, type Gpu, type Target } from "vgpu";
-import { composeMatrix, multiplyMatrices } from "vgpu/scene";
+import { composeMatrix, multiplyMatrices, orthographic } from "vgpu/scene";
 import type { MeshData } from "../gltf/glb";
 import type { GpuPart } from "../gltf/upload";
 import { toothInstances, toothMesh } from "../geometry/comb";
 import { pinMesh } from "../geometry/pins";
 import type { MusicBoxMeta, Vec3 } from "../meta";
 import { cameraMatrices, type CameraMatrices, type OrbitState } from "./camera";
+import { createEnvironment, envCubeView, SPECULAR_LEVELS } from "./environment";
 import combShader from "./shaders/comb.wgsl";
+import glassShader from "./shaders/glass.wgsl";
 import pbrShader from "./shaders/pbr.wgsl";
 import pinsShader from "./shaders/pins.wgsl";
 import postShader from "./shaders/post.wgsl";
@@ -43,31 +45,79 @@ export const LIGHTING = {
   lightDirection: normalize3([-0.45, 1.0, 0.55]),
   lightColor: [1.0, 0.6, 0.32] as Vec3,
   lightIntensity: 3.2,
+  /** Scales of the baked environment (environment.ts) in diffuse / specular ambient. */
   envDiffuse: 0.55,
   envSpecular: 0.8,
-  skyColor: [0.46, 0.42, 0.38] as Vec3,
-  groundColor: [0.11, 0.085, 0.065] as Vec3,
   exposure: 1.0,
   vignette: 0.55,
   clear: [0.018, 0.014, 0.012, 1] as [number, number, number, number],
 };
 
-/** Mirrors `struct Scene` in pbr.wgsl. */
+// ---- Key-light shadow map ----
+export const SHADOW = {
+  size: 2048,
+  format: "depth32float" as GPUTextureFormat,
+  /** World-space box the light frustum must contain: case, movement and the fully open lid (+ margin). */
+  bounds: { min: [-0.085, -0.003, -0.085] as Vec3, max: [0.085, 0.185, 0.06] as Vec3 },
+  /** Receiver offset along the normal in shadow texels (scaled by the texel's world size). */
+  normalBiasTexels: 1.5,
+  /** Rasterised slope-scaled depth bias for the casters. */
+  biasSlopeScale: 1.5,
+};
+
+/** Mirrors `struct Scene` in common.wgsl. */
 type SceneValues = {
   viewProjection: Float32Array;
+  lightViewProjection: Float32Array;
   cameraPosition: Float32Array;
   time: number;
   lightDirection: Vec3;
   lightIntensity: number;
   lightColor: Vec3;
   envDiffuse: number;
-  skyColor: Vec3;
   envSpecular: number;
-  groundColor: Vec3;
-  pad0: number;
+  shadowTexel: number;
+  shadowNormalBias: number;
+  specularLevels: number;
 };
 
+/** Mirrors `struct Model` in shadow.wgsl. */
+type ModelValues = { world: Float32Array; baseColor: [number, number, number, number]; metallic: number; roughness: number };
+
 const HDR_FORMAT: GPUTextureFormat = "rgba16float";
+
+/**
+ * Orthographic key-light view-projection fitted tightly around `bounds` (all 8 corners), looking along
+ * −lightDirection. Returns the matrix and the world size of one shadow texel (larger of x/y).
+ */
+export function fitLightFrustum(
+  lightDirection: Vec3, bounds: { min: Vec3; max: Vec3 }, mapSize: number, out = new Float32Array(16),
+): { viewProjection: Float32Array; texelWorld: number } {
+  const z = normalize3(lightDirection);
+  const x = normalize3([z[2], 0, -z[0]]); // cross(+Y, z)
+  const y: Vec3 = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+  const c: Vec3 = [0, 1, 2].map((i) => (bounds.min[i]! + bounds.max[i]!) / 2) as Vec3;
+  const radius = Math.hypot(bounds.max[0] - c[0], bounds.max[1] - c[1], bounds.max[2] - c[2]);
+  const eye: Vec3 = [c[0] + z[0] * (radius + 0.01), c[1] + z[1] * (radius + 0.01), c[2] + z[2] * (radius + 0.01)];
+  const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const view = new Float32Array([
+    x[0], y[0], z[0], 0,
+    x[1], y[1], z[1], 0,
+    x[2], y[2], z[2], 0,
+    -dot(x, eye), -dot(y, eye), -dot(z, eye), 1,
+  ]);
+  let l = Infinity, r = -Infinity, b = Infinity, t = -Infinity, n = Infinity, f = -Infinity;
+  for (let i = 0; i < 8; i++) {
+    const p: Vec3 = [i & 1 ? bounds.max[0] : bounds.min[0], i & 2 ? bounds.max[1] : bounds.min[1], i & 4 ? bounds.max[2] : bounds.min[2]];
+    const rel: Vec3 = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
+    const vx = dot(rel, x), vy = dot(rel, y), vz = dot(rel, z);
+    l = Math.min(l, vx); r = Math.max(r, vx); b = Math.min(b, vy); t = Math.max(t, vy);
+    n = Math.min(n, -vz); f = Math.max(f, -vz);
+  }
+  const proj = orthographic({ left: l, right: r, bottom: b, top: t, near: Math.max(0, n - 0.002), far: f + 0.002 }, new Float32Array(16));
+  multiplyMatrices(proj, view, out);
+  return { viewProjection: out, texelWorld: Math.max(r - l, t - b) / mapSize };
+}
 
 function normalize3(v: Vec3): Vec3 {
   const l = Math.hypot(v[0], v[1], v[2]) || 1;
@@ -134,12 +184,17 @@ interface SceneObject {
   node: Float32Array; // glTF node matrix
   world: Float32Array;
   motion: Motion;
-  draws: { draw: Draw; factors: GpuPart["primitives"][number]["factors"] }[];
+  /** One `model` block per primitive, shared by its lit, shadow (opaque) or glass draw. */
+  models: { set(values: Partial<ModelValues>): unknown }[];
+  draws: Draw[];   // opaque, lit
+  casters: Draw[]; // opaque, shadow map
+  glass: Draw[];   // blended, drawn last
 }
 
 /**
  * Renderer layout (later tasks plug in here):
- *   scene pass  → HDR target (rgba16float, depth, 4× MSAA): opaque layers in order (parts, teeth, pins; glass T10)
+ *   shadow pass → 2048² depth32float key-light map (only when a caster moved): vs_shadow of parts, teeth, pins
+ *   scene pass  → HDR target (rgba16float, depth, 4× MSAA): parts, teeth, pins (IBL + PCF shadows), glass last
  *   post pass   → output (surface/target): ACES + vignette + sRGB
  */
 export async function createRenderer(
@@ -153,19 +208,39 @@ export async function createRenderer(
     clearColor: LIGHTING.clear, label: "scene-hdr",
   });
 
+  const light = fitLightFrustum(LIGHTING.lightDirection, SHADOW.bounds, SHADOW.size);
   const sceneBlock = uniforms<SceneValues>(gpu, {
     viewProjection: new Float32Array(16),
+    lightViewProjection: light.viewProjection,
     cameraPosition: new Float32Array(3),
     time: 0,
     lightDirection: LIGHTING.lightDirection,
     lightIntensity: LIGHTING.lightIntensity,
     lightColor: LIGHTING.lightColor,
     envDiffuse: LIGHTING.envDiffuse,
-    skyColor: LIGHTING.skyColor,
     envSpecular: LIGHTING.envSpecular,
-    groundColor: LIGHTING.groundColor,
-    pad0: 0,
+    shadowTexel: 1 / SHADOW.size,
+    shadowNormalBias: SHADOW.normalBiasTexels * light.texelWorld,
+    specularLevels: SPECULAR_LEVELS - 1,
   });
+
+  // ---- Image-based lighting (baked once) + key-light shadow map ----
+  const env = createEnvironment(gpu, LIGHTING.lightDirection);
+  const irradianceMap = envCubeView(env.irradiance);
+  const specularMap = envCubeView(env.specular);
+  const envSampler = sampler(gpu, {
+    minFilter: "linear", magFilter: "linear", mipmapFilter: "linear",
+    addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge", addressModeW: "clamp-to-edge",
+  });
+  // vgpu targets always carry a colour attachment: a throwaway r8unorm one (never written) beside the depth.
+  const shadowMap = target(gpu, { size: [SHADOW.size, SHADOW.size], format: "r8unorm", depth: SHADOW.format, label: "shadow" });
+  const shadowSampler = sampler(gpu, {
+    compare: "less-equal", minFilter: "linear", magFilter: "linear",
+    addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge",
+  });
+  const lighting = { scene: sceneBlock, irradianceMap, specularMap, envSampler, shadowMap, shadowSampler };
+  const casterState = { cull: "none", depth: { biasSlopeScale: SHADOW.biasSlopeScale }, writeMask: [] } as const;
+  const shadowEntry = { vertex: "vs_shadow", fragment: "fs_shadow" };
 
   const materialSampler = sampler(gpu, {
     minFilter: "linear", magFilter: "linear", mipmapFilter: "linear",
@@ -176,25 +251,42 @@ export async function createRenderer(
   const objects: SceneObject[] = [];
   for (const [name, part] of parts) {
     const obj: SceneObject = {
-      name, node: part.matrix, world: new Float32Array(part.matrix), motion: motionFor(name, part, meta), draws: [],
+      name, node: part.matrix, world: new Float32Array(part.matrix), motion: motionFor(name, part, meta),
+      models: [], draws: [], casters: [], glass: [],
     };
     for (const [i, prim] of part.primitives.entries()) {
-      if (prim.blend) continue; // glass: drawn by the transparent layer (Task 10)
-      const d = draw(gpu, {
+      const model = uniforms<ModelValues>(gpu, {
+        world: obj.world, baseColor: prim.factors.baseColor, metallic: prim.factors.metallic, roughness: prim.factors.roughness,
+      });
+      obj.models.push(model);
+      if (prim.blend) {
+        // Glass: reflection layer only — no shadow (the movement stays lit under the panel).
+        obj.glass.push(draw(gpu, {
+          shader: glassShader, geometry: prim.geometry, label: `${name}.${i}.glass`,
+          blend: "premultiplied", depth: { write: false }, cull: "back",
+          set: { scene: sceneBlock, model, specularMap, envSampler },
+        }));
+        continue;
+      }
+      obj.draws.push(draw(gpu, {
         shader: pbrShader,
         geometry: prim.geometry,
         label: `${name}.${i}`,
         set: {
-          scene: sceneBlock,
+          ...lighting,
+          model,
           baseColorMap: prim.textures.baseColor,
           normalMap: prim.textures.normal,
           ormMap: prim.textures.metallicRoughness,
           materialSampler,
         },
-      });
-      obj.draws.push({ draw: d, factors: prim.factors });
+      }));
+      obj.casters.push(draw(gpu, {
+        shader: pbrShader, entry: shadowEntry, geometry: prim.geometry, label: `${name}.${i}.shadow`, ...casterState,
+        set: { scene: sceneBlock, model },
+      }));
     }
-    if (obj.draws.length) objects.push(obj);
+    if (obj.models.length) objects.push(obj);
   }
 
   // Per-frame scratch (no allocations in the frame loop).
@@ -210,9 +302,7 @@ export async function createRenderer(
     quat[0] = x * sn; quat[1] = y * sn; quat[2] = z * sn; quat[3] = Math.cos(angle / 2);
   };
   const uploadModel = (o: SceneObject): void => {
-    for (const { draw: d, factors } of o.draws) {
-      d.set({ model: { world: o.world, baseColor: factors.baseColor, metallic: factors.metallic, roughness: factors.roughness } });
-    }
+    for (const model of o.models) model.set({ world: o.world });
   };
   const updateWorld = (o: SceneObject, s: RenderState): void => {
     const m = o.motion;
@@ -234,51 +324,80 @@ export async function createRenderer(
     }
     uploadModel(o);
   };
-  for (const o of objects) if (o.motion.kind === "static") uploadModel(o);
 
   // ---- Comb teeth: 18 instances of one unit-length tooth, bent in the vertex shader ----
   const toothGeometry = instancedGeometry(
     gpu, toothMesh(meta.comb.toothWidth, meta.comb.toothThickness), toothInstances(meta), "teeth",
   );
-  const teeth = draw(gpu, { shader: combShader, geometry: toothGeometry, label: "teeth", cull: "back" });
   const combPlucks = new Float32Array(18 * 4);
   const combPluckViews = Array.from({ length: 18 }, (_, i) => combPlucks.subarray(i * 4, i * 4 + 4));
   const combValues = { plucks: combPluckViews, tipZ: meta.comb.tipZ, combY: meta.comb.y, pad0: 0, pad1: 0 };
-  teeth.set({ scene: sceneBlock });
+  const combBlock = uniforms(gpu, combValues);
+  const teeth = draw(gpu, {
+    shader: combShader, geometry: toothGeometry, label: "teeth", cull: "back", set: { ...lighting, comb: combBlock },
+  });
+  const teethCaster = draw(gpu, {
+    shader: combShader, entry: shadowEntry, geometry: toothGeometry, label: "teeth.shadow", ...casterState,
+    set: { scene: sceneBlock, comb: combBlock },
+  });
 
   // ---- Pins: one instance per arranged note, rebuilt by setPins ----
   const pinBase = pinMesh(meta.pinRadius, meta.pinHeight);
   let pinGeometry: Geometry | null = null;
   let pins: Draw | null = null;
+  let pinsCaster: Draw | null = null;
   const pinValues = {
     center: new Float32Array(meta.cylinder.center), cylinderAngle: 0, radius: meta.cylinder.radius,
     pad0: 0, pad1: 0, pad2: 0,
   };
+  const pinsBlock = uniforms(gpu, pinValues);
   const disposePins = (): void => {
     pins?.dispose();
+    pinsCaster?.dispose();
     pinGeometry?.destroy();
     pins = null;
+    pinsCaster = null;
     pinGeometry = null;
   };
 
-  // Ordered list of scene layers encoded into the HDR pass. T8/T10 append their own layers.
-  const sceneLayers: ((pass: FramePass, s: RenderState) => void)[] = [
-    (pass) => { for (const o of objects) for (const { draw: d } of o.draws) pass.draw(d); },
-    (pass, s) => {
-      const src = s.plucks;
-      for (let i = 0; i < 18; i++) {
-        combPlucks[i * 4] = src[i * 2] ?? 0;
-        combPlucks[i * 4 + 1] = src[i * 2 + 1] ?? 0;
-      }
-      teeth.set({ comb: combValues });
-      pass.draw(teeth);
-    },
-    (pass, s) => {
-      if (!pins) return;
-      pinValues.cylinderAngle = s.cylinderAngle;
-      pins.set({ pins: pinValues });
-      pass.draw(pins);
-    },
+  // Per-frame uniform updates shared by the shadow and scene passes.
+  const updateDynamic = (s: RenderState): void => {
+    const src = s.plucks;
+    for (let i = 0; i < 18; i++) {
+      combPlucks[i * 4] = src[i * 2] ?? 0;
+      combPlucks[i * 4 + 1] = src[i * 2 + 1] ?? 0;
+    }
+    combBlock.set({ plucks: combPluckViews });
+    pinsBlock.set({ cylinderAngle: s.cylinderAngle });
+  };
+
+  // Shadow map: re-rendered only when a caster moved (parts, lid, key, pins or a still-ringing tooth).
+  const shadowKey = new Float64Array(4).fill(NaN); // cylinderAngle, keyAngle, lidOpen01, pin set revision
+  let pinRevision = 0;
+  const RING_SECONDS = 6; // longest tooth tau is 1.2 s: e^-5 of the amplitude is invisible
+  const shadowDirty = (s: RenderState): boolean => {
+    let dirty = false;
+    for (let i = 0; i < 18 && !dirty; i++) {
+      const t = s.time - (s.plucks[i * 2] ?? 0);
+      if ((s.plucks[i * 2 + 1] ?? 0) > 0 && t > -0.1 && t < RING_SECONDS) dirty = true;
+    }
+    const k0 = s.cylinderAngle, k1 = s.keyAngle, k2 = s.lidOpen01, k3 = pinRevision;
+    if (k0 !== shadowKey[0] || k1 !== shadowKey[1] || k2 !== shadowKey[2] || k3 !== shadowKey[3]) dirty = true;
+    shadowKey[0] = k0; shadowKey[1] = k1; shadowKey[2] = k2; shadowKey[3] = k3;
+    return dirty;
+  };
+  const shadowLayers: ((pass: FramePass) => void)[] = [
+    (pass) => { for (const o of objects) for (const d of o.casters) pass.draw(d); },
+    (pass) => pass.draw(teethCaster),
+    (pass) => { if (pinsCaster) pass.draw(pinsCaster); },
+  ];
+
+  // Ordered list of scene layers encoded into the HDR pass: opaque parts, teeth, pins, then glass last.
+  const sceneLayers: ((pass: FramePass) => void)[] = [
+    (pass) => { for (const o of objects) for (const d of o.draws) pass.draw(d); },
+    (pass) => pass.draw(teeth),
+    (pass) => { if (pins) pass.draw(pins); },
+    (pass) => { for (const o of objects) for (const d of o.glass) pass.draw(d); },
   ];
 
   // ---- Post: HDR → output ----
@@ -296,9 +415,14 @@ export async function createRenderer(
         throw new RangeError(`setPins: expected [x, angle0, tooth, 0] quadruples, got ${instances.length} floats`);
       }
       disposePins();
+      pinRevision++; // the shadow map must drop the old pins / add the new ones
       if (disposed || instances.length === 0) return;
       pinGeometry = instancedGeometry(gpu, pinBase, instances, "pins");
-      pins = draw(gpu, { shader: pinsShader, geometry: pinGeometry, label: "pins", cull: "back", set: { scene: sceneBlock } });
+      pins = draw(gpu, { shader: pinsShader, geometry: pinGeometry, label: "pins", cull: "back", set: { ...lighting, pins: pinsBlock } });
+      pinsCaster = draw(gpu, {
+        shader: pinsShader, entry: shadowEntry, geometry: pinGeometry, label: "pins.shadow", ...casterState,
+        set: { scene: sceneBlock, pins: pinsBlock },
+      });
     },
 
     render(s: RenderState): void {
@@ -311,10 +435,16 @@ export async function createRenderer(
         cameraMatrices(s.orbit, aspect, cam);
         sceneBlock.set({ viewProjection: cam.viewProjection, cameraPosition: cam.position, time: s.time });
         for (const o of objects) updateWorld(o, s);
+        updateDynamic(s);
         post.set({ post: { exposure: LIGHTING.exposure, vignette: LIGHTING.vignette, encodeSrgb, aspect } });
 
+        if (shadowDirty(s)) {
+          f.pass({ target: shadowMap, clear: [1, 1, 1, 1], clearDepth: 1 }, (pass) => {
+            for (const layer of shadowLayers) layer(pass);
+          });
+        }
         f.pass({ target: hdr, clear: LIGHTING.clear, clearDepth: 1 }, (pass) => {
-          for (const layer of sceneLayers) layer(pass, s);
+          for (const layer of sceneLayers) layer(pass);
         });
         f.pass(output, post);
         f.submit();
@@ -331,12 +461,16 @@ export async function createRenderer(
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      for (const o of objects) for (const { draw: d } of o.draws) d.dispose();
+      for (const o of objects) for (const d of [...o.draws, ...o.casters, ...o.glass]) d.dispose();
       teeth.dispose();
+      teethCaster.dispose();
       toothGeometry.destroy();
       disposePins();
       post.dispose();
       (hdr as Target & { destroy?: () => void }).destroy?.();
+      (shadowMap as Target & { destroy?: () => void }).destroy?.();
+      env.irradiance.destroy();
+      env.specular.destroy();
     },
   };
 }

@@ -1,12 +1,7 @@
 // Metallic-roughness PBR for the static music box parts. Outputs linear HDR radiance.
-import { Scene, shadePbr } from "./common.wgsl";
-
-struct Model {
-  world: mat4x4f,
-  baseColor: vec4f,
-  metallic: f32,
-  roughness: f32,
-}
+// vs_shadow / fs_shadow render the same deformation into the key-light shadow map.
+import { Scene, sampleIbl, shadePbr, shadowFactor } from "./common.wgsl";
+import { Model, lightClip, modelVertex } from "./shadow.wgsl";
 
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<uniform> model: Model;
@@ -14,6 +9,11 @@ struct Model {
 @group(0) @binding(3) var normalMap: texture_2d<f32>;
 @group(0) @binding(4) var ormMap: texture_2d<f32>;      // R occlusion, G roughness, B metallic
 @group(0) @binding(5) var materialSampler: sampler;
+@group(0) @binding(6) var irradianceMap: texture_cube<f32>;
+@group(0) @binding(7) var specularMap: texture_cube<f32>;
+@group(0) @binding(8) var envSampler: sampler;
+@group(0) @binding(9) var shadowMap: texture_depth_2d;
+@group(0) @binding(10) var shadowSampler: sampler_comparison;
 
 struct VsOut {
   @builtin(position) clip: vec4f,
@@ -29,16 +29,27 @@ struct VsOut {
   @location(2) uv: vec2f,
   @location(3) tangent: vec4f,
 ) -> VsOut {
-  // World matrices are rigid (rotation + translation), so the upper 3x3 transforms normals too.
-  let m = mat3x3f(model.world[0].xyz, model.world[1].xyz, model.world[2].xyz);
-  let wp = model.world * vec4f(position, 1.0);
+  let d = modelVertex(model, position, normal, tangent.xyz);
   var out: VsOut;
-  out.clip = scene.viewProjection * wp;
-  out.worldPos = wp.xyz;
-  out.normal = m * normal;
+  out.clip = scene.viewProjection * vec4f(d.world, 1.0);
+  out.worldPos = d.world;
+  out.normal = d.normal;
   out.uv = uv;
-  out.tangent = vec4f(m * tangent.xyz, tangent.w);
+  out.tangent = vec4f(d.tangent, tangent.w);
   return out;
+}
+
+@vertex fn vs_shadow(
+  @location(0) position: vec3f,
+  @location(1) normal: vec3f,
+  @location(2) uv: vec2f,
+  @location(3) tangent: vec4f,
+) -> @builtin(position) vec4f {
+  return lightClip(scene, modelVertex(model, position, normal, tangent.xyz).world);
+}
+
+@fragment fn fs_shadow() -> @location(0) vec4f {
+  return vec4f(0.0);
 }
 
 @fragment fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
@@ -62,7 +73,9 @@ struct VsOut {
     nm = normalize(t * tn.x + b * tn.y + n * max(tn.z, 1e-3));
   }
   // Double-sided safety: shade back faces with the flipped normal.
-  if (!front) { nm = -nm; }
+  if (!front) { nm = -nm; n = -n; }
 
-  return vec4f(shadePbr(scene, in.worldPos, nm, albedo, metallic, roughness, ao), 1.0);
+  let shadow = shadowFactor(shadowMap, shadowSampler, scene, in.worldPos, n);
+  let ibl = sampleIbl(irradianceMap, specularMap, envSampler, scene, in.worldPos, nm, roughness);
+  return vec4f(shadePbr(scene, in.worldPos, nm, albedo, metallic, roughness, ao, shadow, ibl), 1.0);
 }
