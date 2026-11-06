@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_ORBIT, clampOrbit, cameraMatrices, resetOrbit } from "../../src/render/camera";
+import { DEFAULT_ORBIT, FIT_ASPECT, LENS, MAX_FOV, clampOrbit, cameraMatrices, framingForAspect, resetOrbit } from "../../src/render/camera";
 
 describe("camera", () => {
   it("clamps pitch and distance to the upper limits", () => {
@@ -62,5 +62,35 @@ describe("dampOrbit", () => {
     expect(r.pitch).toBe(DEFAULT_ORBIT.pitch);
     expect(r.distance).toBe(DEFAULT_ORBIT.distance);
     expect(r.target).toEqual([...DEFAULT_ORBIT.target]);
+  });
+});
+
+describe("framingForAspect", () => {
+  const halfH = (fov: number, aspect: number) => Math.tan((fov / 2) * (Math.PI / 180)) * aspect;
+  it("leaves landscape viewports untouched", () => {
+    expect(framingForAspect(16 / 9)).toEqual({ fov: LENS.fov, dolly: 1 });
+    expect(framingForAspect(FIT_ASPECT)).toEqual({ fov: LENS.fov, dolly: 1 });
+  });
+  it("keeps the horizontal coverage of FIT_ASPECT on narrower screens", () => {
+    const ref = halfH(LENS.fov, FIT_ASPECT);
+    for (const aspect of [1.0, 0.75, 0.46, 0.3]) {
+      const f = framingForAspect(aspect);
+      expect(f.fov).toBeLessThanOrEqual(MAX_FOV + 1e-9);
+      expect(f.dolly).toBeGreaterThanOrEqual(1);
+      expect(halfH(f.fov, aspect) * f.dolly).toBeCloseTo(ref, 9);
+    }
+  });
+  it("widens the lens before dollying back", () => {
+    expect(framingForAspect(1.0).dolly).toBe(1);
+    expect(framingForAspect(0.46).fov).toBeCloseTo(MAX_FOV, 9);
+    expect(framingForAspect(0.46).dolly).toBeGreaterThan(1);
+  });
+  it("moves the camera back on a phone in portrait", () => {
+    const t = DEFAULT_ORBIT.target;
+    const dist = (p: Float32Array) => Math.hypot(p[0]! - t[0], p[1]! - t[1], p[2]! - t[2]);
+    const wide = dist(cameraMatrices(DEFAULT_ORBIT, 16 / 9).position);
+    const phone = dist(cameraMatrices(DEFAULT_ORBIT, 390 / 844).position);
+    expect(wide).toBeCloseTo(DEFAULT_ORBIT.distance, 5);
+    expect(phone).toBeCloseTo(DEFAULT_ORBIT.distance * framingForAspect(390 / 844).dolly, 5);
   });
 });

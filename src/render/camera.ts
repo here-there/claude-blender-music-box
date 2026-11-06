@@ -16,6 +16,29 @@ export const DISTANCE_LIMITS = [0.12, 0.6] as const;
 export const LENS = { fov: 35, near: 0.005, far: 5 } as const;
 
 /**
+ * Narrow (portrait) viewports keep the horizontal coverage the default view has at FIT_ASPECT:
+ * first by widening the vertical FOV up to MAX_FOV, then by dollying the camera back for the rest.
+ * Wider viewports are untouched. Applied inside cameraMatrices only, so orbit state and zoom limits
+ * keep their meaning on every screen.
+ */
+export const FIT_ASPECT = 1.25;
+export const MAX_FOV = 55;
+
+export interface Framing {
+  fov: number; // vertical, degrees
+  dolly: number; // multiplier on orbit distance, >= 1
+}
+
+const DEG = Math.PI / 180;
+
+export function framingForAspect(aspect: number): Framing {
+  if (!(aspect > 0) || aspect >= FIT_ASPECT) return { fov: LENS.fov, dolly: 1 };
+  const needed = Math.tan((LENS.fov / 2) * DEG) * (FIT_ASPECT / aspect); // tan of required half-FOV
+  const used = Math.min(needed, Math.tan((MAX_FOV / 2) * DEG));
+  return { fov: (2 * Math.atan(used)) / DEG, dolly: needed / used };
+}
+
+/**
  * 3/4 showcase view from the front-right, high enough to look over the front wall onto the comb,
  * cylinder and pins, with the open lid fully in frame (target sits between the movement and the lid).
  */
@@ -49,10 +72,11 @@ const scratchProjection = new Float32Array(16);
 
 export function cameraMatrices(s: OrbitState, aspect: number, out?: CameraMatrices): CameraMatrices {
   const c = clampOrbit(s);
-  const rig = orbitRig({ target: c.target, yaw: c.yaw, pitch: c.pitch, distance: c.distance });
+  const fit = framingForAspect(aspect);
+  const rig = orbitRig({ target: c.target, yaw: c.yaw, pitch: c.pitch, distance: c.distance * fit.dolly });
   const pose = { position: out?.position ?? new Float32Array(3), quaternion: scratchQuat };
   rigPose(rig, pose);
-  const projection = perspective(LENS, aspect, scratchProjection);
+  const projection = perspective({ ...LENS, fov: fit.fov }, aspect, scratchProjection);
   const m = { view: out?.view ?? new Float32Array(16), viewProjection: out?.viewProjection ?? new Float32Array(16) };
   viewMatrices(pose, projection, m);
   return { view: m.view, viewProjection: m.viewProjection, position: pose.position };
