@@ -9,7 +9,8 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "resolveJsonModule": true
   },
-  "include": ["src", "tests", "vite.config.ts", "vitest.config.ts"]
+  "include": ["src", "tests", "shared", "vite.config.ts", "vitest.config.ts"]
 }
