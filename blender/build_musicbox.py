@@ -36,6 +36,8 @@ def parse_args():
     p.add_argument("--out", required=True, help="output .glb path")
     p.add_argument("--preview", default=None, help="render a check image (Eevee) to this png")
     p.add_argument("--bake-only", default=None, help="comma list of materials to bake, then exit (dev)")
+    p.add_argument("--draft", action="store_true",
+                   help="skip baking but still export the glb (geometry checks; materials are flat)")
     p.add_argument("--no-bake", action="store_true",
                    help="keep procedural materials (only for quick previews; glb not exported)")
     a = p.parse_args(argv)
@@ -78,13 +80,25 @@ LID_AXIS = (-1.0, 0.0, 0.0)            # positive rotation lifts the front edge
 LID_OPEN = math.radians(100.0)
 
 # drive train (all axes along X except governor/key which are vertical)
-PINION_TIP = 0.0032
-BARREL_TIP = 0.0135
-BARREL_C = (0.0, CYL_C[1], CYL_C[2] - (PINION_TIP + BARREL_TIP - 0.0012))
-BIGGEAR_TIP = 0.0115
-TRAIN_PINION_TIP = 0.0040
-_d = BIGGEAR_TIP + TRAIN_PINION_TIP - 0.0008
+# Each meshing pair shares one module m, so pitch radii r = m*N/2 are proportional to the
+# tooth counts and r1 + r2 equals the centre distance. The animation ratios in PART_EXTRAS
+# follow from the same tooth counts (external gears reverse direction).
+BARREL_TEETH, PINION_TEETH = 72, 12          # spring barrel ring -> cylinder pinion (6:1)
+WHEEL_TEETH, TRAIN_PINION_TEETH = 48, 16     # cylinder great wheel -> gear-train pinion (1:3)
+TRAIN_WHEEL_TEETH = 48                       # gear-train wheel -> single-start worm on the fan staff
+D_BARREL = 0.0155                            # barrel axis <-> cylinder axis
+D_TRAIN = 0.0147                             # cylinder axis <-> gear-train axis
+M_BARREL = 2 * D_BARREL / (BARREL_TEETH + PINION_TEETH)
+M_TRAIN = 2 * D_TRAIN / (WHEEL_TEETH + TRAIN_PINION_TEETH)
+PINION_R = M_BARREL * PINION_TEETH / 2
+BARREL_R = M_BARREL * BARREL_TEETH / 2
+BIGGEAR_R = M_TRAIN * WHEEL_TEETH / 2
+TRAIN_PINION_R = M_TRAIN * TRAIN_PINION_TEETH / 2
+BARREL_C = (0.0, CYL_C[1], CYL_C[2] - D_BARREL)
+_d = D_TRAIN
 TRAIN_C = (0.0, CYL_C[1] - 0.006, CYL_C[2] - math.sqrt(_d * _d - 0.006 * 0.006))
+# barrel ring and cylinder pinion share one axial plane (they must overlap in x to mesh)
+DRIVE_X0, DRIVE_X1 = CYL_C[0] + CYL_L / 2 + 0.0035, CYL_C[0] + CYL_L / 2 + 0.0062
 TRAIN_WHEEL_TIP = 0.0085
 WHEEL_X = -0.048
 WORM_R = 0.0018
@@ -93,9 +107,9 @@ KEY_C = (0.019, 0.0, BARREL_C[2])
 
 PART_EXTRAS = {
     "cylinder":      ([1.0, 0.0, 0.0], 1.0),
-    "spring_barrel": ([1.0, 0.0, 0.0], -0.125),
-    "gear_train":    ([1.0, 0.0, 0.0], 3.0),
-    "governor":      ([0.0, 1.0, 0.0], 96.0),
+    "spring_barrel": ([1.0, 0.0, 0.0], -PINION_TEETH / BARREL_TEETH),
+    "gear_train":    ([1.0, 0.0, 0.0], -WHEEL_TEETH / TRAIN_PINION_TEETH),
+    "governor":      ([0.0, 1.0, 0.0], WHEEL_TEETH / TRAIN_PINION_TEETH * TRAIN_WHEEL_TEETH),
     "key":           ([0.0, 1.0, 0.0], 0.0),
     "lid":           (list(LID_AXIS), 0.0),
 }
@@ -156,14 +170,34 @@ def rounded_rect(hx, hz, r, seg=6):
     return pts
 
 
-def gear_outline(n, r_root, r_tip):
+def gear_outline(n, r_root, r_tip, phase=0.0):
+    """Tooth i spans angles [phase + i*da, phase + (i+0.5)*da]; its centre is at +0.25*da."""
     pts = []
     da = 2 * math.pi / n
     for i in range(n):
-        a = i * da
+        a = phase + i * da
         for f, r in ((0.0, r_root), (0.12, r_tip), (0.38, r_tip), (0.5, r_root), (0.75, r_root)):
             pts.append((r * math.cos(a + f * da), r * math.sin(a + f * da)))
     return pts
+
+
+def gear_radii(r_pitch, module):
+    """(root, tip) radii of a gear with the given pitch radius and module."""
+    return r_pitch - 1.25 * module, r_pitch + module
+
+
+def mesh_phase(n, contact_angle, tooth):
+    """Outline phase putting a tooth centre (tooth=True) or a gap centre at contact_angle.
+
+    Angles are in the gear's (u, v) frame, where frame("x", c, u, v, t) maps u -> glTF y and
+    v -> glTF z, so a rotation about +X by phi adds phi to every angle.
+    """
+    return contact_angle - (0.25 if tooth else 0.75) * 2 * math.pi / n
+
+
+# direction (in the cylinder's (u, v) frame) from the cylinder axis to the other axes
+BARREL_DIR = math.atan2(BARREL_C[2] - CYL_C[2], BARREL_C[1] - CYL_C[1])
+TRAIN_DIR = math.atan2(TRAIN_C[2] - CYL_C[2], TRAIN_C[1] - CYL_C[1])
 
 
 class Builder:
@@ -216,8 +250,8 @@ class Builder:
             rs.append([frame(axis, c, u, v, t0 + h * math.sin(a)) for u, v in circle(r * math.cos(a), seg)])
         self.loft(rs, mat, cap0=True, cap1=True)
 
-    def gear(self, axis, c, n, r_root, r_tip, t0, t1, mat, rim=None, hub=None, spokes=4, bore=0.0):
-        outline = gear_outline(n, r_root, r_tip)
+    def gear(self, axis, c, n, r_root, r_tip, t0, t1, mat, rim=None, hub=None, spokes=4, bore=0.0, phase=0.0):
+        outline = gear_outline(n, r_root, r_tip, phase)
         if rim is None:
             if bore > 0:
                 inner = [(bore * math.cos(math.atan2(v, u)), bore * math.sin(math.atan2(v, u))) for u, v in outline]
@@ -1102,9 +1136,12 @@ def build_cylinder(M):
     # arbor (steel)
     b.cyl("x", ax, 0.0011, x0 - 0.0085, x1 + 0.0075, 1, seg=20)
     # great wheel at -X end and pinion at +X end
-    b.gear("x", ax, 64, BIGGEAR_TIP - 0.0009, BIGGEAR_TIP, x0 - 0.0055, x0 - 0.0040, 0, rim=BIGGEAR_TIP - 0.0022,
-           hub=0.0026, spokes=5, bore=0.0)
-    b.gear("x", ax, 12, PINION_TIP - 0.0008, PINION_TIP, x1 + 0.0035, x1 + 0.0062, 0)
+    wr0, wr1 = gear_radii(BIGGEAR_R, M_TRAIN)
+    b.gear("x", ax, WHEEL_TEETH, wr0, wr1, x0 - 0.0055, x0 - 0.0040, 0, rim=wr0 - 0.0012,
+           hub=0.0026, spokes=5, bore=0.0, phase=mesh_phase(WHEEL_TEETH, TRAIN_DIR, tooth=True))
+    pr0, pr1 = gear_radii(PINION_R, M_BARREL)
+    b.gear("x", ax, PINION_TEETH, pr0, pr1, DRIVE_X0, DRIVE_X1, 0,
+           phase=mesh_phase(PINION_TEETH, BARREL_DIR, tooth=True))
     ob = b.to_object("cylinder", [M["brass_polished"], M["steel"]], pivot=CYL_C)
     finish(ob, smooth_angle=30.0)
     return ob
@@ -1114,7 +1151,9 @@ def build_spring_barrel(M):
     bx0, bx1 = 0.0125, 0.0248
     ax = (0, BARREL_C[1], BARREL_C[2])
     b = Builder()
-    b.gear("x", ax, 72, BARREL_TIP - 0.0008, BARREL_TIP, bx0 + 0.0034, bx0 + 0.0061, 0, bore=0.0118)
+    br0, br1 = gear_radii(BARREL_R, M_BARREL)
+    b.gear("x", ax, BARREL_TEETH, br0, br1, DRIVE_X0, DRIVE_X1, 0, bore=0.0118,
+           phase=mesh_phase(BARREL_TEETH, BARREL_DIR + math.pi, tooth=False))
     # drum wall (open toward +X so the blued spring is visible)
     b.tube("x", ax, 0.0118, 0.0128, bx0, bx1, 0, seg=72)
     b.tube("x", ax, 0.0118, 0.0131, bx1 - 0.0008, bx1, 0, seg=72)
@@ -1152,8 +1191,10 @@ def build_gear_train(M):
     cx = CYL_C[0] - CYL_L / 2
     b = Builder()
     # pinion meshing with the great wheel (same plane), wheel driving the worm
-    b.gear("x", ax, 10, TRAIN_PINION_TIP - 0.0009, TRAIN_PINION_TIP, cx - 0.0058, cx - 0.0037, 0)
-    b.gear("x", ax, 48, TRAIN_WHEEL_TIP - 0.0007, TRAIN_WHEEL_TIP, WHEEL_X - 0.0006, WHEEL_X + 0.0006, 0,
+    tr0, tr1 = gear_radii(TRAIN_PINION_R, M_TRAIN)
+    b.gear("x", ax, TRAIN_PINION_TEETH, tr0, tr1, cx - 0.0058, cx - 0.0037, 0,
+           phase=mesh_phase(TRAIN_PINION_TEETH, TRAIN_DIR + math.pi, tooth=False))
+    b.gear("x", ax, TRAIN_WHEEL_TEETH, TRAIN_WHEEL_TIP - 0.0007, TRAIN_WHEEL_TIP, WHEEL_X - 0.0006, WHEEL_X + 0.0006, 0,
            rim=TRAIN_WHEEL_TIP - 0.0017, hub=0.0018, spokes=4)
     b.cyl("x", ax, 0.0008, -0.0535, cx - 0.0010, 1, seg=16)
     ob = b.to_object("gear_train", [M["brass_polished"], M["steel"]], pivot=(cx, TRAIN_C[1], TRAIN_C[2]))
@@ -1373,12 +1414,15 @@ def main():
         MAT_SPECS = {k: v for k, v in MAT_SPECS.items() if k in args.bake_only.split(",")}
         make_materials(bake=True)
         return
-    M = make_materials(bake=not args.no_bake)
+    M = make_materials(bake=not (args.no_bake or args.draft))
     parts = [build_case(M), build_lid(M), build_glass(M), build_bedplate(M), build_comb_base(M),
              build_cylinder(M), build_cylinder_bracket(M), build_spring_barrel(M), build_spring_coil(M),
              build_gear_train(M), build_governor(M), build_key(M), build_felt(M)]
     print("[musicbox] parts:", ", ".join(p.name for p in parts))
-    if not args.no_bake:
+    if args.draft:
+        export(args.out)
+        print(f"[musicbox] wrote draft {args.out} (unbaked materials, meta not written)")
+    elif not args.no_bake:
         export(args.out)
         meta_path = os.path.join(os.path.dirname(args.out), "musicbox.meta.json")
         write_meta(meta_path)

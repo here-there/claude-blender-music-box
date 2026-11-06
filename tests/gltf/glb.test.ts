@@ -32,7 +32,10 @@ describe("parseGlb", () => {
   });
   it("reads extras", () => {
     expect(parts.get("cylinder")!.extras.ratio).toBe(1);
-    expect(parts.get("governor")!.extras.ratio).toBe(96);
+    // ratios follow the modelled tooth counts: barrel 72 -> pinion 12, wheel 48 -> train 16, train wheel 48 -> worm
+    expect(parts.get("spring_barrel")!.extras.ratio).toBeCloseTo(-12 / 72, 9);
+    expect(parts.get("gear_train")!.extras.ratio).toBe(-3);
+    expect(parts.get("governor")!.extras.ratio).toBe(144);
   });
   it("glass is blended", () => {
     expect(parts.get("glass")!.primitives[0]!.material.alphaMode).toBe("BLEND");
