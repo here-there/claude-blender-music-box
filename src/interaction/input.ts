@@ -35,9 +35,11 @@ const WIND_DEADZONE = 12;
 const KEY_ID = partId("key");
 const LID_ID = partId("lid");
 
-type Mode = "pending" | "orbit" | "lid" | "wind";
+/** "pinch": a second finger turned this touch into a pinch; it stays inert until lifted. */
+type Mode = "pending" | "orbit" | "lid" | "wind" | "pinch";
 interface Drag {
   pointerId: number;
+  pointerType: string;
   startX: number; startY: number;
   lastX: number; lastY: number; // last position applied to the orbit
   curX: number; curY: number;
@@ -52,15 +54,34 @@ interface Drag {
   armed: boolean;
 }
 
+/** Two-finger pinch: zoom scales by the ratio of finger distances. */
+interface Pinch {
+  ids: [number, number];
+  pos: Map<number, [number, number]>;
+  startDist: number;
+  startDistance: number;
+}
+
 export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => void {
   const { renderer, mechanism, audio, ui } = deps;
   let drag: Drag | null = null;
+  let pinch: Pinch | null = null;
   let hoverSeq = 0;
   let hoverTimer: ReturnType<typeof setTimeout> | null = null;
   let lastHover = -Infinity;
   let hoverPos: [number, number] = [0, 0];
 
   canvas.style.touchAction = "none";
+
+  /** Pointer capture is a nicety: it throws for pointers the browser no longer tracks (e.g. a finger
+   *  already lifted), and that must not abort the gesture. */
+  const capture = (pointerId: number): void => {
+    try {
+      canvas.setPointerCapture(pointerId);
+    } catch {
+      /* not capturable: events still arrive while the pointer stays over the canvas */
+    }
+  };
 
   const pickAt = (cssX: number, cssY: number): Promise<number> => {
     const [px, py] = cssToTargetPixel(cssX, cssY, canvas.getBoundingClientRect(), deps.targetSize());
@@ -132,19 +153,46 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
     return true;
   };
 
+  const pinchDist = (p: Pinch): number => {
+    const [a, b] = p.ids.map((id) => p.pos.get(id)!) as [[number, number], [number, number]];
+    return Math.hypot(a[0] - b[0], a[1] - b[1]);
+  };
+
+  /** A second touch while one finger is down: cancel that finger's gesture and start pinching. */
+  const startPinch = (d: Drag, e: PointerEvent): void => {
+    capture(e.pointerId);
+    d.mode = "pinch";
+    canvas.style.cursor = "";
+    const p: Pinch = {
+      ids: [d.pointerId, e.pointerId],
+      pos: new Map([[d.pointerId, [d.curX, d.curY]], [e.pointerId, [e.clientX, e.clientY]]]),
+      startDist: 0,
+      startDistance: deps.getOrbit().distance,
+    };
+    p.startDist = Math.max(1, pinchDist(p));
+    pinch = p;
+  };
+
   const onPointerDown = (e: PointerEvent): void => {
     void audio.resume().catch(() => undefined);
-    if (e.button !== 0 || drag) return;
-    canvas.setPointerCapture(e.pointerId);
+    if (e.button !== 0) return;
+    if (drag) {
+      if (!pinch && e.pointerType === "touch" && drag.pointerType === "touch" && e.pointerId !== drag.pointerId) {
+        startPinch(drag, e);
+      }
+      return;
+    }
+    capture(e.pointerId);
     cancelHover();
     ui.hideLabel();
     const d: Drag = {
-      pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY,
+      pointerId: e.pointerId, pointerType: e.pointerType, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY,
       curX: e.clientX, curY: e.clientY, moved: 0, detail: e.detail, mode: "pending", released: false,
       cx: 0, cy: 0, sign: 1, prevAngle: 0, ratchet: 0, armed: false,
     };
     drag = d;
     void pickAt(e.clientX, e.clientY).then((id) => {
+      if (d.mode === "pinch") return;
       if (id === KEY_ID && !d.released && beginWind(d)) {
         canvas.style.cursor = "grabbing";
         applyWind(d);
@@ -160,6 +208,13 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
   };
 
   const onPointerMove = (e: PointerEvent): void => {
+    const p = pinch;
+    if (p && p.pos.has(e.pointerId)) {
+      p.pos.set(e.pointerId, [e.clientX, e.clientY]);
+      const ratio = p.startDist / Math.max(1, pinchDist(p));
+      updateOrbit((o) => { o.distance = p.startDistance * ratio; });
+      return;
+    }
     const d = drag;
     if (d && e.pointerId === d.pointerId) {
       d.curX = e.clientX;
@@ -175,6 +230,10 @@ export function attachInput(canvas: HTMLCanvasElement, deps: InputDeps): () => v
   };
 
   const endDrag = (e: PointerEvent): void => {
+    if (pinch?.pos.has(e.pointerId)) {
+      pinch = null; // the remaining finger stays inert (mode "pinch") until it lifts
+      if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    }
     const d = drag;
     if (!d || e.pointerId !== d.pointerId) return;
     d.released = true;

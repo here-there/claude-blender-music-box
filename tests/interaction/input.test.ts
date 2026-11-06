@@ -199,3 +199,69 @@ describe("attachInput winding dead zone", () => {
     expect(calls[0]![0]).toBeCloseTo(Math.PI / 2, 6);
   });
 });
+
+describe("attachInput pinch zoom (touch)", () => {
+  function touch(t: ReturnType<typeof setup>, type: string, id: number, x: number, y: number) {
+    const e = new MouseEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true });
+    Object.defineProperty(e, "pointerId", { value: id });
+    Object.defineProperty(e, "pointerType", { value: "touch" });
+    t.canvas.dispatchEvent(e);
+  }
+
+  it("spreading two fingers zooms in by the distance ratio; the first finger does not orbit", async () => {
+    const t = setup(0);
+    touch(t, "pointerdown", 1, 300, 300);
+    await flush();
+    touch(t, "pointerdown", 2, 400, 300); // 100 px apart
+    await flush();
+    touch(t, "pointermove", 2, 450, 300); // 150 px apart
+    touch(t, "pointermove", 1, 250, 300); // 200 px apart
+    expect(t.orbit().distance).toBeCloseTo(DEFAULT_ORBIT.distance * (100 / 200), 9);
+    expect(t.orbit().yaw).toBeCloseTo(DEFAULT_ORBIT.yaw, 9);
+    expect(t.orbit().pitch).toBeCloseTo(DEFAULT_ORBIT.pitch, 9);
+  });
+
+  it("pinching in zooms out, clamped to the distance limits", async () => {
+    const t = setup(0);
+    touch(t, "pointerdown", 1, 300, 300);
+    touch(t, "pointerdown", 2, 500, 300); // 200 px
+    await flush();
+    touch(t, "pointermove", 2, 310, 300); // 10 px → 20x farther, clamped
+    expect(t.orbit().distance).toBe(clampOrbit({ ...DEFAULT_ORBIT, distance: 1e9 }).distance);
+  });
+
+  it("a pinch that starts on the lid never toggles it, and the leftover finger does not orbit", async () => {
+    const t = setup(partId("lid"));
+    touch(t, "pointerdown", 1, 300, 300);
+    await flush();
+    touch(t, "pointerdown", 2, 400, 300);
+    touch(t, "pointerup", 2, 400, 300);
+    touch(t, "pointermove", 1, 360, 340);
+    touch(t, "pointerup", 1, 360, 340);
+    await flush();
+    expect(t.deps.mechanism.setLid).not.toHaveBeenCalled();
+    expect(t.orbit()).toEqual(clampOrbit(DEFAULT_ORBIT));
+  });
+
+  it("a pinch that starts on the key does not wind", async () => {
+    const t = setup(partId("key"));
+    const c = keyCenter(t.deps.key);
+    touch(t, "pointerdown", 1, c[0] + 50, c[1]);
+    await flush();
+    touch(t, "pointerdown", 2, c[0] + 150, c[1]);
+    touch(t, "pointermove", 1, c[0], c[1] + 50);
+    expect(t.deps.mechanism.wind).not.toHaveBeenCalled();
+  });
+
+  it("after both fingers lift, a new single touch orbits again", async () => {
+    const t = setup(0);
+    touch(t, "pointerdown", 1, 300, 300);
+    touch(t, "pointerdown", 2, 400, 300);
+    touch(t, "pointerup", 1, 300, 300);
+    touch(t, "pointerup", 2, 400, 300);
+    touch(t, "pointerdown", 3, 300, 300);
+    await flush();
+    touch(t, "pointermove", 3, 320, 300);
+    expect(t.orbit().yaw).toBeCloseTo(DEFAULT_ORBIT.yaw - 20 * 0.005, 9);
+  });
+});
