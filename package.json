@@ -1,0 +1,33 @@
+{
+  "name": "music-box",
+  "version": "1.0.0",
+  "description": "Browser music box (Vite + TypeScript + vgpu)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "model": "/Applications/Blender.app/Contents/MacOS/Blender -b -P blender/build_musicbox.py -- --out public/musicbox.glb",
+    "check": "for f in src/render/shaders/*.wgsl; do vgpu check \"$f\" > /dev/null || exit 1; done"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.18.0",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@12.18.0",
+  "type": "module",
+  "dependencies": {
+    "@vgpu/wgsl": "^0.6.0",
+    "vgpu": "^0.6.0"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74",
+    "jsdom": "^30.1.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0"
+  },
+  "private": true
+}

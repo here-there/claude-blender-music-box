@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>八音盒</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #1a1614; overflow: hidden; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      .fatal {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 12px;
+        background: #1a1614; color: #e8dccb; font-family: system-ui, sans-serif; text-align: center; padding: 24px;
+      }
+      .fatal-reload {
+        font: inherit; color: #1a1614; background: #e8dccb; border: 0;
+        border-radius: 6px; padding: 8px 18px; cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
