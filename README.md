@@ -1,5 +1,7 @@
 # 八音盒（Music Box）
 
+在线演示：https://study.geobridge.cn/webgpu/music-box/（需要支持 WebGPU 的桌面 Chrome / Edge 113+）
+
 一个运行在浏览器里的 3D 八音盒：用 WebGPU（vgpu）实时渲染，Web Audio 合成钢齿的拨奏声。上弦、开盖，滚筒上的钉子依次拨动钢齿，随着发条放松，旋律渐渐变慢直至停下。
 
 内置曲目：《给爱丽丝》《卡农》《小星星》《千年等一回》。

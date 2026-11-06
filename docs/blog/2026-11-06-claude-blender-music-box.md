@@ -1,6 +1,6 @@
 # 用 Claude + Blender 从零做一个会“真转”的八音盒
 
-> 在线演示：【演示链接】——打开盒盖就会开始播放，转到盒底可以拖动钥匙上弦。
+> 在线演示：[study.geobridge.cn/webgpu/music-box](https://study.geobridge.cn/webgpu/music-box/)——打开盒盖就会开始播放，转到盒底可以拖动钥匙上弦。
 > 源码：[github.com/here-there/claude-blender-music-box](https://github.com/here-there/claude-blender-music-box)（错误版本见标签 [`v0.1-gear-misaligned`](https://github.com/here-there/claude-blender-music-box/tree/v0.1-gear-misaligned)）
 
 ![成品：打开盒盖的八音盒](assets/final/hero.jpg)
@@ -232,4 +232,4 @@ pnpm model    # 用 Blender 重新生成 public/musicbox.glb
 - `src/audio/`：钢片音色合成
 - `src/interaction/`：相机、上弦、开合盖、悬停标注
 
-在线演示：【演示链接】
+在线演示：[study.geobridge.cn/webgpu/music-box](https://study.geobridge.cn/webgpu/music-box/)
