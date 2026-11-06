@@ -3,8 +3,8 @@ import { arrange, findCooldownViolations } from "../../src/songs/arrange";
 import { SONGS } from "../../src/songs/library";
 
 describe("SONGS", () => {
-  it("has the three songs", () => {
-    expect(SONGS.map((s) => s.id)).toEqual(["fur-elise", "canon", "twinkle"]);
+  it("has the four songs", () => {
+    expect(SONGS.map((s) => s.id)).toEqual(["fur-elise", "canon", "twinkle", "qiannian"]);
   });
   for (const s of SONGS) {
     describe(s.id, () => {

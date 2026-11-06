@@ -84,8 +84,30 @@ twChords.forEach((c, i) => {
   twinkleNotes.push({ beat: i * 2 + 1, midi: TW_THIRD[c]! });
 });
 
+// ---- 千年等一回, chorus only, C major (1 = C), 4/4, 4 phrases x 2 bars ------
+// Not public domain: added at the user's request. Melody + sparse C Am F G
+// broken-chord accompaniment, kept at or below the melody register.
+const QN_MELODY: [number, number][] = [
+  // phrase 1
+  [0, G4], [0.5, A4], [1, C5], [2, D5], [3, C5], [4, A4], [5, G4],
+  // phrase 2
+  [8, G4], [8.5, A4], [9, C5], [10, D5], [11, D5],
+  // phrase 3
+  [16, G4], [16.5, A4], [17, C5], [18, D5], [19, C5], [20, A4], [21, G4],
+  // phrase 4
+  [24, G4], [25, E5], [26, D5], [27, C5], [28, C5],
+];
+const qiannianNotes: Note[] = QN_MELODY.map(([beat, midi]) => ({ beat, midi }));
+// One bar of broken chord (4 beats): root @0, fifth @2, third @3 (1-5-3 shape).
+const QN_C = [C4, G4, E4], QN_AM = [A3, E4, C4], QN_F = [F4, C4, A3], QN_G = [G4, 71, 71];
+const QN_BARS = [QN_C, QN_AM, QN_F, QN_G, QN_C, QN_AM, QN_F, QN_C];
+QN_BARS.forEach((chord, bar) => {
+  [0, 2, 3].forEach((off, k) => qiannianNotes.push({ beat: bar * 4 + off, midi: chord[k]! }));
+});
+
 export const SONGS: readonly Song[] = [
   { id: "fur-elise", title: "给爱丽丝", bpm: 100, beatsPerRevolution: 27, notes: eliseNotes },
   { id: "canon", title: "卡农", bpm: 140, beatsPerRevolution: 48, notes: canonNotes },
   { id: "twinkle", title: "小星星", bpm: 126, beatsPerRevolution: 48, notes: twinkleNotes },
+  { id: "qiannian", title: "千年等一回", bpm: 100, beatsPerRevolution: 32, notes: qiannianNotes },
 ];
