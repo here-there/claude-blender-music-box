@@ -1,20 +1,5 @@
 // Metallic-roughness PBR for the static music box parts. Outputs linear HDR radiance.
-import { PI, distributionGGX, visibilitySmithGGX, fresnelSchlick, envBRDFApprox } from "./common.wgsl";
-
-// Per-frame block shared by every scene draw (one `uniforms()` object bound as `scene`).
-struct Scene {
-  viewProjection: mat4x4f,
-  cameraPosition: vec3f,
-  time: f32,
-  lightDirection: vec3f,   // unit vector from the surface toward the key light
-  lightIntensity: f32,
-  lightColor: vec3f,       // ~3200K warm key light, linear
-  envDiffuse: f32,
-  skyColor: vec3f,         // constant environment (T10 replaces with irradiance / prefiltered maps)
-  envSpecular: f32,
-  groundColor: vec3f,
-  pad0: f32,
-}
+import { Scene, shadePbr } from "./common.wgsl";
 
 struct Model {
   world: mat4x4f,
@@ -56,10 +41,6 @@ struct VsOut {
   return out;
 }
 
-fn environment(dir: vec3f) -> vec3f {
-  return mix(scene.groundColor, scene.skyColor, smoothstep(-0.4, 0.8, dir.y));
-}
-
 @fragment fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
   let base = textureSample(baseColorMap, materialSampler, in.uv) * model.baseColor;
   let orm = textureSample(ormMap, materialSampler, in.uv);
@@ -83,26 +64,5 @@ fn environment(dir: vec3f) -> vec3f {
   // Double-sided safety: shade back faces with the flipped normal.
   if (!front) { nm = -nm; }
 
-  let v = normalize(scene.cameraPosition - in.worldPos);
-  let l = normalize(scene.lightDirection);
-  let h = normalize(v + l);
-  let NdotV = max(dot(nm, v), 1e-4);
-  let NdotL = max(dot(nm, l), 0.0);
-  let NdotH = max(dot(nm, h), 0.0);
-  let VdotH = max(dot(v, h), 0.0);
-
-  let a = roughness * roughness;
-  let f0 = mix(vec3f(0.04), albedo, metallic);
-  let F = fresnelSchlick(VdotH, f0);
-  let spec = distributionGGX(NdotH, a) * visibilitySmithGGX(NdotV, NdotL, a) * F;
-  let kd = (vec3f(1.0) - F) * (1.0 - metallic);
-  let radiance = scene.lightColor * scene.lightIntensity;
-  let direct = (kd * albedo / PI + spec) * radiance * NdotL;
-
-  // Constant (hemisphere) environment term.
-  let r = reflect(-v, nm);
-  let envSpec = envBRDFApprox(f0, roughness, NdotV) * mix(environment(r), environment(nm), roughness * roughness);
-  let ambient = (albedo * (1.0 - metallic) * environment(nm) * scene.envDiffuse + envSpec * scene.envSpecular) * ao;
-
-  return vec4f(direct + ambient, 1.0);
+  return vec4f(shadePbr(scene, in.worldPos, nm, albedo, metallic, roughness, ao), 1.0);
 }

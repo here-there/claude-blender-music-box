@@ -2,6 +2,21 @@
 
 export const PI: f32 = 3.14159265359;
 
+// Per-frame block shared by every scene draw (one `uniforms()` object bound as `scene`).
+export struct Scene {
+  viewProjection: mat4x4f,
+  cameraPosition: vec3f,
+  time: f32,
+  lightDirection: vec3f,   // unit vector from the surface toward the key light
+  lightIntensity: f32,
+  lightColor: vec3f,       // ~3200K warm key light, linear
+  envDiffuse: f32,
+  skyColor: vec3f,         // constant environment (T10 replaces with irradiance / prefiltered maps)
+  envSpecular: f32,
+  groundColor: vec3f,
+  pad0: f32,
+}
+
 // GGX / Trowbridge-Reitz normal distribution. `a` = perceptual roughness squared.
 export fn distributionGGX(NdotH: f32, a: f32) -> f32 {
   let a2 = a * a;
@@ -46,4 +61,35 @@ export fn linearToSrgb(c: vec3f) -> vec3f {
   let lo = c * 12.92;
   let hi = 1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055;
   return select(hi, lo, c <= vec3f(0.0031308));
+}
+
+// Constant hemisphere environment: ground colour below, sky colour above.
+export fn environment(scene: Scene, dir: vec3f) -> vec3f {
+  return mix(scene.groundColor, scene.skyColor, smoothstep(-0.4, 0.8, dir.y));
+}
+
+// Metallic-roughness shading: warm key light (GGX) + constant environment. Returns linear HDR radiance.
+// `n` must be normalised and facing the viewer side the caller wants lit.
+export fn shadePbr(scene: Scene, worldPos: vec3f, n: vec3f, albedo: vec3f, metallic: f32, roughnessIn: f32, ao: f32) -> vec3f {
+  let roughness = clamp(roughnessIn, 0.045, 1.0);
+  let v = normalize(scene.cameraPosition - worldPos);
+  let l = normalize(scene.lightDirection);
+  let h = normalize(v + l);
+  let NdotV = max(dot(n, v), 1e-4);
+  let NdotL = max(dot(n, l), 0.0);
+  let NdotH = max(dot(n, h), 0.0);
+  let VdotH = max(dot(v, h), 0.0);
+
+  let a = roughness * roughness;
+  let f0 = mix(vec3f(0.04), albedo, metallic);
+  let F = fresnelSchlick(VdotH, f0);
+  let spec = distributionGGX(NdotH, a) * visibilitySmithGGX(NdotV, NdotL, a) * F;
+  let kd = (vec3f(1.0) - F) * (1.0 - metallic);
+  let radiance = scene.lightColor * scene.lightIntensity;
+  let direct = (kd * albedo / PI + spec) * radiance * NdotL;
+
+  let r = reflect(-v, n);
+  let envSpec = envBRDFApprox(f0, roughness, NdotV) * mix(environment(scene, r), environment(scene, n), roughness * roughness);
+  let ambient = (albedo * (1.0 - metallic) * environment(scene, n) * scene.envDiffuse + envSpec * scene.envSpecular) * ao;
+  return direct + ambient;
 }

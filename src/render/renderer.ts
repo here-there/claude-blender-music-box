@@ -1,9 +1,14 @@
-import { draw, effect, frame, sampler, target, uniforms, type Draw, type FramePass, type Gpu, type Target } from "vgpu";
+import { draw, effect, frame, geometry, sampler, target, uniforms, type Draw, type FramePass, type Geometry, type Gpu, type Target } from "vgpu";
 import { composeMatrix, multiplyMatrices } from "vgpu/scene";
+import type { MeshData } from "../gltf/glb";
 import type { GpuPart } from "../gltf/upload";
+import { toothInstances, toothMesh } from "../geometry/comb";
+import { pinMesh } from "../geometry/pins";
 import type { MusicBoxMeta, Vec3 } from "../meta";
 import { cameraMatrices, type CameraMatrices, type OrbitState } from "./camera";
+import combShader from "./shaders/comb.wgsl";
 import pbrShader from "./shaders/pbr.wgsl";
+import pinsShader from "./shaders/pins.wgsl";
 import postShader from "./shaders/post.wgsl";
 
 export interface RenderState {
@@ -14,12 +19,13 @@ export interface RenderState {
   /** Already eased 0..1 (see easeLid). */
   lidOpen01: number;
   orbit: OrbitState;
-  /** 18×2: [pluckTime, amplitude] — used from Task 8. */
+  /** 18×2: [pluckTime, amplitude] per tooth, pluckTime on the same base as `time` (release moment). */
   plucks: Float32Array;
 }
 
 export interface Renderer {
-  setPins(instances: Float32Array): void; // Task 8
+  /** Per pin [x, angle0, tooth, 0] (pinInstances); replaces the previous set. */
+  setPins(instances: Float32Array): void;
   render(state: RenderState): void;
   pick(cssX: number, cssY: number): Promise<number>; // Task 11: PartId encoding, 0 = none
   dispose(): void;
@@ -68,17 +74,40 @@ function normalize3(v: Vec3): Vec3 {
   return [v[0] / l, v[1] / l, v[2] / l];
 }
 
-function axisAngleQuat(axis: ArrayLike<number>, angle: number): [number, number, number, number] {
-  const [x, y, z] = normalize3([axis[0] ?? 0, axis[1] ?? 0, axis[2] ?? 0]);
-  const s = Math.sin(angle / 2);
-  return [x * s, y * s, z * s, Math.cos(angle / 2)];
-}
-
 function vec3Extra(extras: Record<string, unknown>, key: string): Vec3 | null {
   const v = extras[key];
   if (!Array.isArray(v) || v.length !== 3 || !v.every((n) => typeof n === "number")) return null;
   const [x, y, z] = v as number[];
   return [x!, y!, z!];
+}
+
+/** Interleaved 48-byte mesh stream (upload.ts layout) plus a per-instance vec4f stream at location 4. */
+function instancedGeometry(gpu: Gpu, mesh: MeshData, instances: Float32Array, label: string): Geometry {
+  const n = mesh.positions.length / 3;
+  const interleaved = new Float32Array(n * 12);
+  for (let v = 0; v < n; v++) {
+    interleaved.set(mesh.positions.subarray(v * 3, v * 3 + 3), v * 12);
+    interleaved.set(mesh.normals.subarray(v * 3, v * 3 + 3), v * 12 + 3);
+    interleaved.set(mesh.uvs.subarray(v * 2, v * 2 + 2), v * 12 + 6);
+    interleaved.set(mesh.tangents.subarray(v * 4, v * 4 + 4), v * 12 + 8);
+  }
+  return geometry(gpu, {
+    label,
+    buffers: [
+      {
+        data: interleaved,
+        stride: 48,
+        attributes: {
+          position: { format: "float32x3", offset: 0, location: 0 },
+          normal: { format: "float32x3", offset: 12, location: 1 },
+          uv: { format: "float32x2", offset: 24, location: 2 },
+          tangent: { format: "float32x4", offset: 32, location: 3 },
+        },
+      },
+      { stepMode: "instance", data: new Float32Array(instances), stride: 16, attributes: { inst: { format: "float32x4", location: 4 } } },
+    ],
+    indices: mesh.indices,
+  });
 }
 
 /** How a part's world matrix follows the render state. */
@@ -110,7 +139,7 @@ interface SceneObject {
 
 /**
  * Renderer layout (later tasks plug in here):
- *   scene pass  → HDR target (rgba16float, depth, 4× MSAA): opaque layers in order (parts now; teeth/pins T8; glass T10)
+ *   scene pass  → HDR target (rgba16float, depth, 4× MSAA): opaque layers in order (parts, teeth, pins; glass T10)
  *   post pass   → output (surface/target): ACES + vignette + sRGB
  */
 export async function createRenderer(
@@ -168,31 +197,88 @@ export async function createRenderer(
     if (obj.draws.length) objects.push(obj);
   }
 
+  // Per-frame scratch (no allocations in the frame loop).
   const tmpA = new Float32Array(16);
   const tmpB = new Float32Array(16);
-  const updateWorld = (o: SceneObject, s: RenderState): void => {
-    const m = o.motion;
-    if (m.kind === "static") {
-      o.world.set(o.node);
-    } else if (m.kind === "spin") {
-      // node × R(axis, angle): rotate about the part's own origin/axis
-      composeMatrix({ quaternion: axisAngleQuat(m.axis, m.angle(s)) }, tmpA);
-      multiplyMatrices(o.node, tmpA, o.world);
-    } else {
-      // T(p) × R(axis, angle) × T(−p) × node: rotate about the hinge line in world space
-      composeMatrix({ position: m.point, quaternion: axisAngleQuat(m.axis, m.angle(s)) }, tmpA);
-      composeMatrix({ position: [-m.point[0], -m.point[1], -m.point[2]] }, tmpB);
-      multiplyMatrices(tmpA, tmpB, tmpA);
-      multiplyMatrices(tmpA, o.node, o.world);
-    }
+  const quat: [number, number, number, number] = [0, 0, 0, 1];
+  const spinPose = { quaternion: quat };
+  const hingePose = { position: [0, 0, 0] as Vec3, quaternion: quat };
+  const hingeBack = { position: [0, 0, 0] as Vec3 };
+  const setQuat = (axis: Vec3, angle: number): void => {
+    const [x, y, z] = normalize3(axis);
+    const sn = Math.sin(angle / 2);
+    quat[0] = x * sn; quat[1] = y * sn; quat[2] = z * sn; quat[3] = Math.cos(angle / 2);
+  };
+  const uploadModel = (o: SceneObject): void => {
     for (const { draw: d, factors } of o.draws) {
       d.set({ model: { world: o.world, baseColor: factors.baseColor, metallic: factors.metallic, roughness: factors.roughness } });
     }
+  };
+  const updateWorld = (o: SceneObject, s: RenderState): void => {
+    const m = o.motion;
+    if (m.kind === "static") return; // world + model uniform written once at creation
+    if (m.kind === "spin") {
+      // node × R(axis, angle): rotate about the part's own origin/axis
+      setQuat(m.axis, m.angle(s));
+      composeMatrix(spinPose, tmpA);
+      multiplyMatrices(o.node, tmpA, o.world);
+    } else {
+      // T(p) × R(axis, angle) × T(−p) × node: rotate about the hinge line in world space
+      setQuat(m.axis, m.angle(s));
+      hingePose.position[0] = m.point[0]; hingePose.position[1] = m.point[1]; hingePose.position[2] = m.point[2];
+      hingeBack.position[0] = -m.point[0]; hingeBack.position[1] = -m.point[1]; hingeBack.position[2] = -m.point[2];
+      composeMatrix(hingePose, tmpA);
+      composeMatrix(hingeBack, tmpB);
+      multiplyMatrices(tmpA, tmpB, tmpA);
+      multiplyMatrices(tmpA, o.node, o.world);
+    }
+    uploadModel(o);
+  };
+  for (const o of objects) if (o.motion.kind === "static") uploadModel(o);
+
+  // ---- Comb teeth: 18 instances of one unit-length tooth, bent in the vertex shader ----
+  const toothGeometry = instancedGeometry(
+    gpu, toothMesh(meta.comb.toothWidth, meta.comb.toothThickness), toothInstances(meta), "teeth",
+  );
+  const teeth = draw(gpu, { shader: combShader, geometry: toothGeometry, label: "teeth", cull: "back" });
+  const combPlucks = new Float32Array(18 * 4);
+  const combPluckViews = Array.from({ length: 18 }, (_, i) => combPlucks.subarray(i * 4, i * 4 + 4));
+  const combValues = { plucks: combPluckViews, tipZ: meta.comb.tipZ, combY: meta.comb.y, pad0: 0, pad1: 0 };
+  teeth.set({ scene: sceneBlock });
+
+  // ---- Pins: one instance per arranged note, rebuilt by setPins ----
+  const pinBase = pinMesh(meta.pinRadius, meta.pinHeight);
+  let pinGeometry: Geometry | null = null;
+  let pins: Draw | null = null;
+  const pinValues = {
+    center: new Float32Array(meta.cylinder.center), cylinderAngle: 0, radius: meta.cylinder.radius,
+    pad0: 0, pad1: 0, pad2: 0,
+  };
+  const disposePins = (): void => {
+    pins?.dispose();
+    pinGeometry?.destroy();
+    pins = null;
+    pinGeometry = null;
   };
 
   // Ordered list of scene layers encoded into the HDR pass. T8/T10 append their own layers.
   const sceneLayers: ((pass: FramePass, s: RenderState) => void)[] = [
     (pass) => { for (const o of objects) for (const { draw: d } of o.draws) pass.draw(d); },
+    (pass, s) => {
+      const src = s.plucks;
+      for (let i = 0; i < 18; i++) {
+        combPlucks[i * 4] = src[i * 2] ?? 0;
+        combPlucks[i * 4 + 1] = src[i * 2 + 1] ?? 0;
+      }
+      teeth.set({ comb: combValues });
+      pass.draw(teeth);
+    },
+    (pass, s) => {
+      if (!pins) return;
+      pinValues.cylinderAngle = s.cylinderAngle;
+      pins.set({ pins: pinValues });
+      pass.draw(pins);
+    },
   ];
 
   // ---- Post: HDR → output ----
@@ -205,8 +291,14 @@ export async function createRenderer(
   let disposed = false;
 
   return {
-    setPins(_instances: Float32Array): void {
-      // Task 8: instanced pins.
+    setPins(instances: Float32Array): void {
+      if (instances.length % 4 !== 0) {
+        throw new RangeError(`setPins: expected [x, angle0, tooth, 0] quadruples, got ${instances.length} floats`);
+      }
+      disposePins();
+      if (disposed || instances.length === 0) return;
+      pinGeometry = instancedGeometry(gpu, pinBase, instances, "pins");
+      pins = draw(gpu, { shader: pinsShader, geometry: pinGeometry, label: "pins", cull: "back", set: { scene: sceneBlock } });
     },
 
     render(s: RenderState): void {
@@ -240,6 +332,9 @@ export async function createRenderer(
       if (disposed) return;
       disposed = true;
       for (const o of objects) for (const { draw: d } of o.draws) d.dispose();
+      teeth.dispose();
+      toothGeometry.destroy();
+      disposePins();
       post.dispose();
       (hdr as Target & { destroy?: () => void }).destroy?.();
     },
