@@ -99,7 +99,7 @@ const QN_MELODY: [number, number][] = [
 ];
 const qiannianNotes: Note[] = QN_MELODY.map(([beat, midi]) => ({ beat, midi }));
 // One bar of broken chord (4 beats): root @0, fifth @2, third @3 (1-5-3 shape).
-const QN_C = [C4, G4, E4], QN_AM = [A3, E4, C4], QN_F = [F4, C4, A3], QN_G = [G4, 71, 71];
+const QN_C = [C4, G4, E4], QN_AM = [A3, E4, C4], QN_F = [F4, C4, A3], QN_G = [G4, B4, G4];
 const QN_BARS = [QN_C, QN_AM, QN_F, QN_G, QN_C, QN_AM, QN_F, QN_C];
 QN_BARS.forEach((chord, bar) => {
   [0, 2, 3].forEach((off, k) => qiannianNotes.push({ beat: bar * 4 + off, midi: chord[k]! }));
